@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "rusty_lox",
+    "rlox_lib",
+]
