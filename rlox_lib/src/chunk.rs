@@ -1,5 +1,5 @@
 use crate::value::Value;
-use std::fmt::{write, Display, Formatter};
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Copy, Clone)]
 pub enum OpCode {
@@ -70,5 +70,11 @@ impl Chunk {
         for i in 0..self.codes.len() {
             self.disassemble_instruction(i);
         }
+    }
+}
+
+impl Default for Chunk {
+    fn default() -> Self {
+        Self::new()
     }
 }
