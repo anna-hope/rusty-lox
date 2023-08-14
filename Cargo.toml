@@ -1,6 +1,3 @@
 [workspace]
 
-members = [
-    "rusty_lox",
-    "rlox_lib",
-]
+members = ["rlox", "rlox_lib"]
