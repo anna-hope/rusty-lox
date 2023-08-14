@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::scanner::TokenType::Eof;
 use lazy_static::lazy_static;
 use thiserror::Error;
 
@@ -216,6 +217,8 @@ impl Scanner {
             }
         }
 
+        let eof = Token::new(Eof, previous, 0, line);
+        tokens.push(eof);
         tokens
     }
 }
@@ -243,7 +246,7 @@ impl Token {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum TokenType {
     // Single-character tokens.
     LeftParen,
@@ -295,7 +298,7 @@ pub enum TokenType {
     Eof,
 }
 
-#[derive(Debug, Error, Clone, Copy)]
+#[derive(Debug, Error, Clone, Copy, Eq, PartialEq)]
 pub enum ScannerError {
     #[error("Unexpected character at line {0}")]
     UnexpectedCharacter(usize),
