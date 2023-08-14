@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::iter::Peekable;
 
 use lazy_static::lazy_static;
 use thiserror::Error;
@@ -207,7 +206,7 @@ impl Scanner {
                             TokenType::String
                         }
                     }
-                    _ => unimplemented!(),
+                    _ => TokenType::Error(ScannerError::UnexpectedCharacter(line)),
                 };
 
                 let length = index - previous + 1;
