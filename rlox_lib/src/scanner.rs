@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use crate::scanner::TokenType::Eof;
 use lazy_static::lazy_static;
 use thiserror::Error;
 
@@ -31,222 +30,16 @@ lazy_static! {
     };
 }
 
-macro_rules! matches {
-    ($char_iter:expr, $expected:literal, $primary:expr, $alternative:expr, $index:expr) => {
-        if let Some((_, c)) = $char_iter.peek() {
-            if c == &$expected {
-                $char_iter.next();
-                $index += 1;
-                $primary
-            } else {
-                $alternative
-            }
-        } else {
-            $alternative
-        }
-    };
+#[derive(Debug, Error, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum ScannerError {
+    #[error("Unexpected character at line {0}")]
+    UnexpectedCharacter(usize),
+
+    #[error("Unterminated string at line {0}")]
+    UnterminatedString(usize),
 }
 
-pub struct Scanner {
-    source: String,
-}
-
-impl Scanner {
-    pub fn new(source: String) -> Self {
-        Self { source }
-    }
-
-    pub fn scan_tokens(&self) -> Vec<Token> {
-        let mut tokens = vec![];
-        let mut previous = 0;
-        let mut line = 1;
-
-        let mut char_iter = self.source.chars().enumerate().peekable();
-
-        while let Some((mut index, c)) = char_iter.next() {
-            // Skip whitespace.
-            if c == '\n' {
-                line += 1;
-            }
-
-            if c.is_ascii_whitespace() {
-                // Increment previous because we are ignoring whitespace,
-                // so previous should start when the whitespace ends.
-                previous += 1;
-            } else if c == '/' {
-                if let Some((_, c_next)) = char_iter.peek() {
-                    if c_next == &'/' {
-                        // A comment goes until the end of the line.
-                        for (_, c1) in char_iter.by_ref() {
-                            if c1 == '\n' {
-                                break;
-                            }
-
-                            // Increment previous and index,
-                            // because both should start when the comment ends.
-                            previous += 1;
-                            index += 1;
-                        }
-                    }
-                }
-            } else if is_alpha(c) {
-                // Gather characters into a string so we can check it against
-                // the map of keywords.
-                let mut string_so_far = String::new();
-                string_so_far.push(c);
-
-                // We need to iterate while peeking because it's the only way
-                // to iterate over the token without also consuming what follows.
-                while let Some((_, c1)) = char_iter.peek() {
-                    if is_alpha(*c1) || c1.is_ascii_digit() {
-                        string_so_far.push(*c1);
-                        index += 1;
-                        char_iter.next();
-                    } else {
-                        break;
-                    }
-                }
-
-                let token_type = if let Some(token_type) = KEYWORDS.get(&string_so_far) {
-                    token_type.to_owned()
-                } else {
-                    TokenType::Identifier
-                };
-
-                let length = index - previous + 1;
-                let token = Token::new(token_type, previous, length, line);
-                tokens.push(token);
-                previous += length;
-            } else if c.is_ascii_digit() {
-                // Consume the whole number, while advancing the main iterator.
-                // Numbers can be fractional, like 123.45.
-                while let Some((_, c1)) = char_iter.peek() {
-                    // Look for a fractional part.
-                    if c1 == &'.' {
-                        if let Some((_, c_next)) = char_iter.peek() {
-                            if c_next.is_ascii_digit() {
-                                // Consume the ".".
-                                char_iter.next();
-                                index += 1;
-                            }
-                        }
-
-                        // Go to the next digit.
-                        index += 1;
-                        char_iter.next();
-                    } else if c1.is_ascii_digit() {
-                        index += 1;
-                        char_iter.next();
-                    } else {
-                        break;
-                    }
-                }
-
-                let length = index - previous + 1;
-                let token = Token::new(TokenType::Number, previous, length, line);
-                tokens.push(token);
-                previous += length;
-            } else {
-                let token_type = match c {
-                    '(' => TokenType::LeftParen,
-                    ')' => TokenType::RightParen,
-                    '{' => TokenType::LeftBrace,
-                    '}' => TokenType::RightBrace,
-                    ';' => TokenType::Semicolon,
-                    ',' => TokenType::Comma,
-                    '.' => TokenType::Dot,
-                    '-' => TokenType::Minus,
-                    '+' => TokenType::Plus,
-                    '/' => TokenType::Slash,
-                    '*' => TokenType::Star,
-                    '!' => {
-                        matches!(char_iter, '=', TokenType::BangEqual, TokenType::Bang, index)
-                    }
-                    '=' => {
-                        matches!(
-                            char_iter,
-                            '=',
-                            TokenType::EqualEqual,
-                            TokenType::Equal,
-                            index
-                        )
-                    }
-                    '<' => {
-                        matches!(char_iter, '=', TokenType::LessEqual, TokenType::Less, index)
-                    }
-                    '>' => {
-                        matches!(
-                            char_iter,
-                            '=',
-                            TokenType::GreaterEqual,
-                            TokenType::Greater,
-                            index
-                        )
-                    }
-                    '"' => {
-                        while let Some((_, c1)) = char_iter.peek() {
-                            if c1 == &'"' {
-                                break;
-                            }
-
-                            if let Some((_, next_char)) = char_iter.peek() {
-                                if next_char == &'\n' {
-                                    line += 1;
-                                }
-                            }
-
-                            char_iter.next();
-                            index += 1;
-                        }
-
-                        if char_iter.peek().is_none() {
-                            TokenType::Error(ScannerError::UnterminatedString(line))
-                        } else {
-                            char_iter.next();
-                            index += 1;
-                            TokenType::String
-                        }
-                    }
-                    _ => TokenType::Error(ScannerError::UnexpectedCharacter(line)),
-                };
-
-                let length = index - previous + 1;
-                let token = Token::new(token_type, previous, length, line);
-                tokens.push(token);
-                previous += length;
-            }
-        }
-
-        let eof = Token::new(Eof, previous, 0, line);
-        tokens.push(eof);
-        tokens
-    }
-}
-
-fn is_alpha(c: char) -> bool {
-    c.is_ascii_alphabetic() || c == '_'
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Token {
-    pub token_type: TokenType,
-    pub start: usize,
-    pub length: usize,
-    pub line: usize,
-}
-
-impl Token {
-    pub fn new(token_type: TokenType, start: usize, length: usize, line: usize) -> Self {
-        Self {
-            token_type,
-            start,
-            length,
-            line,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum TokenType {
     // Single-character tokens.
     LeftParen,
@@ -298,11 +91,265 @@ pub enum TokenType {
     Eof,
 }
 
-#[derive(Debug, Error, Clone, Copy, Eq, PartialEq)]
-pub enum ScannerError {
-    #[error("Unexpected character at line {0}")]
-    UnexpectedCharacter(usize),
+#[derive(Debug, Clone, PartialEq)]
+pub struct Token {
+    pub token_type: TokenType,
+    pub start: usize,
+    pub line: usize,
+    pub value: String,
+}
 
-    #[error("Unterminated string at line {0}")]
-    UnterminatedString(usize),
+impl Token {
+    pub fn new(token_type: TokenType, start: usize, line: usize, value: String) -> Self {
+        Self {
+            token_type,
+            start,
+            line,
+            value,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Scanner {
+    source: Vec<u8>,
+    previous_index: usize,
+    current_index: usize,
+    current_line: usize,
+}
+
+impl Scanner {
+    pub fn new(source: impl ToString) -> Self {
+        Self {
+            source: source.to_string().as_bytes().to_vec(),
+            previous_index: 0,
+            current_index: 0,
+            current_line: 1,
+        }
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.source
+            .get(self.current_index + 1)
+            .map(|x| char::from(*x))
+    }
+
+    fn pick_token_type(
+        &mut self,
+        expected: char,
+        primary: TokenType,
+        alternative: TokenType,
+    ) -> TokenType {
+        if let Some(peeked_char) = self.peek_char() {
+            if peeked_char == expected {
+                self.current_index += 1;
+                primary
+            } else {
+                alternative
+            }
+        } else {
+            alternative
+        }
+    }
+
+    fn get_source_substr(&self, start: usize, end: usize) -> String {
+        String::from_utf8(self.source[start..end].to_vec()).unwrap()
+    }
+
+    pub fn scan_token(&mut self) -> Token {
+        if let Some(current_byte) = self.source.get(self.current_index) {
+            let current_char = char::from(*current_byte);
+
+            // Skip whitespace.
+            if current_char == '\n' {
+                self.current_line += 1;
+            }
+
+            if current_char.is_ascii_whitespace() {
+                // Increment previous because we are ignoring whitespace,
+                // so previous should start when the whitespace ends.
+                self.previous_index += 1;
+                self.current_index += 1;
+            } else if current_char == '/' {
+                if let Some(next_byte) = self.source.get(self.current_index + 1) {
+                    let next_char = char::from(*next_byte);
+                    if next_char == '/' {
+                        while let Some(peeked_char) = self.peek_char() {
+                            if peeked_char == '\n' {
+                                break;
+                            }
+
+                            // Increment previous and index,
+                            // because both should start when the comment ends.
+                            self.previous_index += 1;
+                            self.current_index += 1;
+                        }
+                    }
+                }
+            } else if is_alpha(current_char) {
+                // Gather characters into a string so we can check it against
+                // the map of keywords.
+                let mut string_so_far = String::new();
+                string_so_far.push(current_char);
+
+                while let Some(peeked_char) = self.peek_char() {
+                    if is_alpha(peeked_char) || peeked_char.is_ascii_digit() {
+                        string_so_far.push(peeked_char);
+                        self.current_index += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let token_type = if let Some(token_type) = KEYWORDS.get(&string_so_far) {
+                    token_type.to_owned()
+                } else {
+                    TokenType::Identifier
+                };
+
+                self.current_index += 1;
+                let length = self.current_index - self.previous_index;
+                let token = Token::new(
+                    token_type,
+                    self.previous_index,
+                    self.current_line,
+                    string_so_far,
+                );
+                self.previous_index += length;
+                return token;
+            } else if current_char.is_ascii_digit() {
+                // Consume the whole number, while advancing the index.
+                // Numbers can be fractional, like 123.45.
+
+                while let Some(peeked_char) = self.peek_char() {
+                    if peeked_char == '.' {
+                        if let Some(next_char) = self.peek_char() {
+                            if next_char.is_ascii_digit() {
+                                self.current_index += 1;
+                            }
+                        }
+
+                        self.current_index += 1;
+                    } else if peeked_char.is_ascii_digit() {
+                        self.current_index += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                self.current_index += 1;
+                let length = self.current_index - self.previous_index;
+                let token_str = self.get_source_substr(self.previous_index, self.current_index);
+                let token = Token::new(
+                    TokenType::Number,
+                    self.previous_index,
+                    self.current_line,
+                    token_str,
+                );
+                self.previous_index += length;
+                return token;
+            } else {
+                let token_type = match current_char {
+                    '(' => TokenType::LeftParen,
+                    ')' => TokenType::RightParen,
+                    '{' => TokenType::LeftBrace,
+                    '}' => TokenType::RightBrace,
+                    ';' => TokenType::Semicolon,
+                    ',' => TokenType::Comma,
+                    '.' => TokenType::Dot,
+                    '-' => TokenType::Minus,
+                    '+' => TokenType::Plus,
+                    '/' => TokenType::Slash,
+                    '*' => TokenType::Star,
+                    '!' => self.pick_token_type('=', TokenType::BangEqual, TokenType::Bang),
+                    '=' => self.pick_token_type('=', TokenType::EqualEqual, TokenType::Equal),
+                    '<' => self.pick_token_type('=', TokenType::LessEqual, TokenType::Less),
+                    '>' => self.pick_token_type('=', TokenType::GreaterEqual, TokenType::Greater),
+                    '"' => {
+                        while let Some(peeked_char) = self.peek_char() {
+                            if peeked_char == '"' {
+                                break;
+                            }
+
+                            if let Some(next_char) = self.peek_char() {
+                                if next_char == '\n' {
+                                    self.current_line += 1;
+                                }
+                            }
+
+                            self.current_index += 1;
+                        }
+
+                        if self.peek_char().is_none() {
+                            TokenType::Error(ScannerError::UnterminatedString(self.current_line))
+                        } else {
+                            self.current_index += 1;
+                            TokenType::String
+                        }
+                    }
+                    _ => TokenType::Error(ScannerError::UnexpectedCharacter(self.current_line)),
+                };
+
+                self.current_index += 1;
+                let length = self.current_index - self.previous_index;
+                let token_substr = self.get_source_substr(self.previous_index, self.current_index);
+                let token = Token::new(
+                    token_type,
+                    self.previous_index,
+                    self.current_line,
+                    token_substr,
+                );
+                self.previous_index += length;
+                return token;
+            }
+            self.scan_token()
+        } else {
+            Token::new(
+                TokenType::Eof,
+                self.current_index,
+                self.current_line,
+                "".to_string(),
+            )
+        }
+    }
+}
+
+fn is_alpha(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_tokens() {
+        let input = "print 1.2 + 2;";
+
+        let tests = [
+            Token::new(TokenType::Print, 0, 1, "print".to_string()),
+            Token::new(TokenType::Number, 6, 1, "1.2".to_string()),
+            Token::new(TokenType::Plus, 10, 1, "+".to_string()),
+            Token::new(TokenType::Number, 12, 1, "2".to_string()),
+            Token::new(TokenType::Semicolon, 13, 1, ";".to_string()),
+            Token::new(TokenType::Eof, 14, 1, "".to_string()),
+        ];
+
+        let mut scanner = Scanner::new(input);
+        let mut tokens = vec![];
+
+        loop {
+            let token = scanner.scan_token();
+            let token_type = token.token_type;
+
+            tokens.push(token);
+            if token_type == TokenType::Eof {
+                break;
+            }
+        }
+
+        for (token, expected) in tokens.iter().zip(&tests) {
+            assert_eq!(token, expected);
+        }
+    }
 }
