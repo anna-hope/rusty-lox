@@ -21,9 +21,9 @@ impl Display for OpCode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Chunk {
-    codes: Vec<OpCode>,
+    pub codes: Vec<OpCode>,
     lines: Vec<usize>,
     constants: Vec<f64>,
 }
@@ -42,9 +42,10 @@ impl Chunk {
         self.lines.push(line);
     }
 
-    pub fn add_constant(&mut self, value: Value) -> usize {
+    pub fn add_constant(&mut self, value: Value, line: usize) {
         self.constants.push(value);
-        self.constants.len() - 1
+        let index = self.constants.len() - 1;
+        self.add_code(OpCode::Constant(index), line);
     }
 
     pub fn read_constant(&self, index: usize) -> Value {

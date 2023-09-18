@@ -1,19 +1,278 @@
-use crate::scanner::Scanner;
+use std::ops::Add;
+use std::{env, mem};
 
-pub fn compile(source: String) {
-    let scanner = Scanner::new(source.clone());
-    let tokens = scanner.scan_tokens();
+use thiserror::Error;
 
-    let chars = source.as_bytes();
+use crate::chunk::OpCode::Divide;
+use crate::chunk::{Chunk, OpCode};
+use crate::scanner::{Scanner, Token, TokenType};
+use crate::value::Value;
 
-    for token in tokens {
-        let mut token_string = String::new();
-        let token_chars = &chars[token.start..token.start + token.length];
-        for c in token_chars {
-            token_string.push(c.to_owned() as char);
+#[derive(Debug, Error)]
+pub enum CompileError {
+    #[error("Compile error")]
+    Error,
+}
+
+pub type Result<T> = std::result::Result<T, CompileError>;
+
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
+enum Precedence {
+    Lowest,
+    Assignment, // =
+    Or,         // or
+    And,        // and
+    Equality,   // == !=
+    Comparison, // < > <= >=
+    Term,       // + -
+    Factor,     // * /
+    Unary,      // ! -
+    Call,       // . ()
+    Primary,
+}
+
+impl Add<u8> for Precedence {
+    type Output = Self;
+
+    fn add(self, rhs: u8) -> Self::Output {
+        let discriminator = self as u8;
+        let max_discriminator = Self::Primary as u8;
+        let sum = discriminator + rhs;
+        if sum > max_discriminator {
+            Self::Primary
+        } else {
+            // SAFETY: because we check that self + rhs <= max_discriminator,
+            // it's safe to transmute the sum back into Precedence.
+            unsafe { mem::transmute::<u8, Self>(sum) }
+        }
+    }
+}
+
+fn get_precedence(token_type: TokenType) -> Precedence {
+    match token_type {
+        TokenType::LeftParen | TokenType::RightParen => Precedence::Lowest,
+        TokenType::LeftBrace | TokenType::RightBrace => Precedence::Lowest,
+        TokenType::Comma => Precedence::Lowest,
+        TokenType::Dot => Precedence::Lowest,
+        TokenType::Minus | TokenType::Plus => Precedence::Term,
+        TokenType::Semicolon => Precedence::Lowest,
+        TokenType::Slash | TokenType::Star => Precedence::Factor,
+        _ => Precedence::Lowest,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Parser {
+    scanner: Scanner,
+    previous: Option<Token>,
+    current: Option<Token>,
+    chunk: Chunk,
+    had_error: bool,
+    panic_mode: bool,
+}
+
+impl Parser {
+    pub fn new(source: impl ToString) -> Self {
+        let scanner = Scanner::new(source);
+        Self {
+            scanner,
+            previous: None,
+            current: None,
+            chunk: Chunk::new(),
+            had_error: false,
+            panic_mode: false,
+        }
+    }
+
+    pub fn compile(&mut self) -> Result<Vec<Chunk>> {
+        self.advance();
+        self.expression();
+        self.consume(TokenType::Eof, "Expect end of expression");
+        self.end_compiler();
+
+        let chunks = vec![self.chunk.clone()];
+
+        if self.had_error {
+            Err(CompileError::Error)
+        } else {
+            Ok(chunks)
+        }
+    }
+
+    fn advance(&mut self) {
+        self.previous = self.current.clone();
+        loop {
+            self.current = Some(self.scanner.scan_token());
+            if !matches!(
+                self.current.as_ref().unwrap().token_type,
+                TokenType::Error(_)
+            ) {
+                break;
+            }
+
+            self.error(self.current.as_ref().unwrap().value.clone().as_str());
+        }
+    }
+
+    fn error(&mut self, message: &str) {
+        if self.panic_mode {
+            return;
         }
 
-        dbg!(token_string);
-        dbg!(token);
+        let token = self.previous.as_ref().unwrap();
+
+        self.panic_mode = true;
+        eprint!("[line {}] Error", token.line);
+
+        match token.token_type {
+            TokenType::Eof => eprint!(" at end"),
+            TokenType::Error(_) => {
+                // Nothing here.
+            }
+            _ => eprint!(" at {}: {}", token.start, token.value),
+        }
+
+        eprintln!(": {}", message);
+        self.had_error = true;
+    }
+
+    fn consume(&mut self, token_type: TokenType, message: &str) {
+        if self.current.as_ref().unwrap().token_type == token_type {
+            self.advance();
+        } else {
+            self.error(message);
+        }
+    }
+
+    fn emit_code(&mut self, code: OpCode) {
+        self.chunk
+            .add_code(code, self.previous.as_ref().unwrap().line);
+    }
+
+    fn emit_codes(&mut self, code1: OpCode, code2: OpCode) {
+        // Not sure if we'll use this method this way,
+        // but it's defined this way in the book so we'll keep it like this for now.
+        self.emit_code(code1);
+        self.emit_code(code2);
+    }
+
+    fn end_compiler(&mut self) {
+        self.emit_return();
+        if env::var("DEBUG_PRINT_CODE") == Ok("1".to_string()) && !self.had_error {
+            self.chunk.disassemble("code");
+        }
+    }
+
+    fn binary(&mut self) {
+        let operator_type = self.previous.as_ref().unwrap().token_type;
+        let precedence = get_precedence(operator_type);
+        self.parse_precedence(precedence + 1);
+
+        match operator_type {
+            TokenType::Plus => self.emit_code(OpCode::Add),
+            TokenType::Minus => self.emit_code(OpCode::Subtract),
+            TokenType::Star => self.emit_code(OpCode::Multiply),
+            TokenType::Slash => self.emit_code(Divide),
+            _ => unreachable!(),
+        }
+    }
+
+    fn grouping(&mut self) {
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after expression.");
+    }
+
+    fn number(&mut self) {
+        let value = self
+            .previous
+            .as_ref()
+            .unwrap()
+            .value
+            .parse::<f64>()
+            .unwrap();
+        self.emit_constant(value);
+    }
+
+    fn unary(&mut self) {
+        let operator_type = self.previous.as_ref().unwrap().token_type;
+
+        // Compile the operand.
+        self.parse_precedence(Precedence::Unary);
+
+        // Emit the operator instruction.
+        match operator_type {
+            TokenType::Minus => self.emit_code(OpCode::Negate),
+            _ => unreachable!(),
+        }
+    }
+
+    fn get_prefix_rule(&self) -> Option<fn(&mut Parser)> {
+        match self.previous.as_ref().unwrap().token_type {
+            TokenType::LeftParen => Some(Self::grouping),
+            TokenType::Minus => Some(Self::unary),
+            TokenType::Number => Some(Self::number),
+            _ => None,
+        }
+    }
+
+    fn get_infix_rule(&self) -> Option<fn(&mut Parser)> {
+        match self.previous.as_ref().unwrap().token_type {
+            TokenType::Minus | TokenType::Plus => Some(Self::binary),
+            TokenType::Slash | TokenType::Star => Some(Self::binary),
+            _ => None,
+        }
+    }
+
+    fn parse_precedence(&mut self, precedence: Precedence) {
+        self.advance();
+
+        if let Some(prefix_rule) = self.get_prefix_rule() {
+            prefix_rule(self);
+
+            while precedence <= get_precedence(self.current.as_ref().unwrap().token_type) {
+                self.advance();
+                let infix_rule = self.get_infix_rule().unwrap_or_else(|| {
+                    panic!(
+                        "Expected an infix rule for {:?}",
+                        self.previous.as_ref().unwrap().token_type
+                    )
+                });
+                infix_rule(self);
+            }
+        } else {
+            self.error("Expect expression");
+        }
+    }
+
+    fn expression(&mut self) {
+        self.parse_precedence(Precedence::Assignment);
+    }
+
+    fn emit_return(&mut self) {
+        self.emit_code(OpCode::Return);
+    }
+
+    fn emit_constant(&mut self, value: Value) {
+        self.chunk
+            .add_constant(value, self.previous.as_ref().unwrap().line);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile() {
+        let input = "1 + 1";
+        let mut parser = Parser::new(input);
+        let chunks = parser.compile().unwrap();
+
+        for chunk in chunks.iter() {
+            for index in 0..chunk.codes.len() {
+                chunk.disassemble_instruction(index);
+            }
+        }
     }
 }
