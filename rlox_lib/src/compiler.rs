@@ -49,16 +49,24 @@ impl Add<u8> for Precedence {
     }
 }
 
-fn get_precedence(token_type: TokenType) -> Precedence {
-    match token_type {
-        TokenType::LeftParen | TokenType::RightParen => Precedence::Lowest,
-        TokenType::LeftBrace | TokenType::RightBrace => Precedence::Lowest,
-        TokenType::Comma => Precedence::Lowest,
-        TokenType::Dot => Precedence::Lowest,
-        TokenType::Minus | TokenType::Plus => Precedence::Term,
-        TokenType::Semicolon => Precedence::Lowest,
-        TokenType::Slash | TokenType::Star => Precedence::Factor,
-        _ => Precedence::Lowest,
+impl From<TokenType> for Precedence {
+    fn from(value: TokenType) -> Self {
+        match value {
+            TokenType::LeftParen | TokenType::RightParen => Precedence::Lowest,
+            TokenType::LeftBrace | TokenType::RightBrace => Precedence::Lowest,
+            TokenType::Comma => Precedence::Lowest,
+            TokenType::Dot => Precedence::Lowest,
+            TokenType::Minus | TokenType::Plus => Precedence::Term,
+            TokenType::Semicolon => Precedence::Lowest,
+            TokenType::Slash | TokenType::Star => Precedence::Factor,
+            TokenType::BangEqual => Precedence::Equality,
+            TokenType::EqualEqual => Precedence::Equality,
+            TokenType::Greater
+            | TokenType::GreaterEqual
+            | TokenType::Less
+            | TokenType::LessEqual => Precedence::Comparison,
+            _ => Precedence::Lowest,
+        }
     }
 }
 
@@ -166,7 +174,7 @@ impl Parser {
 
     fn binary(&mut self) {
         let operator_type = self.previous.as_ref().unwrap().token_type;
-        let precedence = get_precedence(operator_type);
+        let precedence: Precedence = operator_type.into();
         self.parse_precedence(precedence + 1);
 
         match operator_type {
@@ -174,6 +182,23 @@ impl Parser {
             TokenType::Minus => self.emit_code(OpCode::Subtract),
             TokenType::Star => self.emit_code(OpCode::Multiply),
             TokenType::Slash => self.emit_code(Divide),
+            TokenType::BangEqual => self.emit_codes(OpCode::Equal, OpCode::Not),
+            TokenType::EqualEqual => self.emit_code(OpCode::Equal),
+            TokenType::Greater => self.emit_code(OpCode::Greater),
+            TokenType::GreaterEqual => self.emit_codes(OpCode::Less, OpCode::Not),
+            TokenType::Less => self.emit_code(OpCode::Less),
+            TokenType::LessEqual => self.emit_codes(OpCode::Greater, OpCode::Not),
+            _ => unreachable!(),
+        }
+    }
+
+    fn literal(&mut self) {
+        let previous_type = self.previous.as_ref().unwrap().token_type;
+
+        match previous_type {
+            TokenType::False => self.emit_code(OpCode::False),
+            TokenType::Nil => self.emit_code(OpCode::Nil),
+            TokenType::True => self.emit_code(OpCode::True),
             _ => unreachable!(),
         }
     }
@@ -191,7 +216,7 @@ impl Parser {
             .value
             .parse::<f64>()
             .unwrap();
-        self.emit_constant(value);
+        self.emit_constant(value.into());
     }
 
     fn unary(&mut self) {
@@ -203,6 +228,7 @@ impl Parser {
         // Emit the operator instruction.
         match operator_type {
             TokenType::Minus => self.emit_code(OpCode::Negate),
+            TokenType::Bang => self.emit_code(OpCode::Not),
             _ => unreachable!(),
         }
     }
@@ -212,6 +238,8 @@ impl Parser {
             TokenType::LeftParen => Some(Self::grouping),
             TokenType::Minus => Some(Self::unary),
             TokenType::Number => Some(Self::number),
+            TokenType::False | TokenType::True | TokenType::Nil => Some(Self::literal),
+            TokenType::Bang => Some(Self::unary),
             _ => None,
         }
     }
@@ -220,6 +248,10 @@ impl Parser {
         match self.previous.as_ref().unwrap().token_type {
             TokenType::Minus | TokenType::Plus => Some(Self::binary),
             TokenType::Slash | TokenType::Star => Some(Self::binary),
+            TokenType::BangEqual => Some(Self::binary),
+            TokenType::EqualEqual => Some(Self::binary),
+            TokenType::Greater | TokenType::GreaterEqual => Some(Self::binary),
+            TokenType::Less | TokenType::LessEqual => Some(Self::binary),
             _ => None,
         }
     }
@@ -230,7 +262,7 @@ impl Parser {
         if let Some(prefix_rule) = self.get_prefix_rule() {
             prefix_rule(self);
 
-            while precedence <= get_precedence(self.current.as_ref().unwrap().token_type) {
+            while precedence <= self.current.as_ref().unwrap().token_type.into() {
                 self.advance();
                 let infix_rule = self.get_infix_rule().unwrap_or_else(|| {
                     panic!(
@@ -264,7 +296,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compile() {
+    fn compile_arithmetic_expression() {
         let input = "1 + 1";
         let mut parser = Parser::new(input);
         let chunks = parser.compile().unwrap();

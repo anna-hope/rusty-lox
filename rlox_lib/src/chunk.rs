@@ -4,10 +4,17 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug, Copy, Clone)]
 pub enum OpCode {
     Constant(usize),
+    Nil,
+    True,
+    False,
+    Equal,
+    Greater,
+    Less,
     Add,
     Subtract,
     Multiply,
     Divide,
+    Not,
     Negate,
     Return,
 }
@@ -15,8 +22,7 @@ pub enum OpCode {
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let debug_repr = format!("{self:?}");
-        let display_repr =
-            format!("OP_{}", debug_repr.to_ascii_uppercase()).replace(r"\(\d+\)", "");
+        let display_repr = format!("OP_{}", debug_repr.to_ascii_uppercase());
         write!(f, "{display_repr}")
     }
 }
@@ -24,8 +30,8 @@ impl Display for OpCode {
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub codes: Vec<OpCode>,
-    lines: Vec<usize>,
-    constants: Vec<f64>,
+    pub lines: Vec<usize>,
+    constants: Vec<Value>,
 }
 
 impl Chunk {
@@ -48,8 +54,8 @@ impl Chunk {
         self.add_code(OpCode::Constant(index), line);
     }
 
-    pub fn read_constant(&self, index: usize) -> Value {
-        self.constants[index]
+    pub fn read_constant(&self, index: usize) -> &Value {
+        &self.constants[index]
     }
 
     pub fn disassemble_instruction(&self, offset: usize) -> usize {
@@ -62,26 +68,15 @@ impl Chunk {
 
         let instruction = self.codes[offset];
         match instruction {
-            OpCode::Return => {
-                println!("{instruction}");
-                offset + 1
-            }
             OpCode::Constant(index) => {
-                let value = self.constants[index];
-                println!("{instruction:-16} {index:4} '{value}'");
+                let value = &self.constants[index];
+                println!("{instruction:-16} {index:4} '{value:?}'");
                 offset + 1
             }
-            OpCode::Add | OpCode::Subtract | OpCode::Multiply | OpCode::Divide => {
+            _ => {
                 println!("{instruction}");
                 offset + 1
             }
-            OpCode::Negate => {
-                println!("{instruction}");
-                offset + 1
-            } // _ => {
-              //     println!("Unknown opcode: {instruction:?}");
-              //     offset + 1
-              // }
         }
     }
 
