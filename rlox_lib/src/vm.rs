@@ -28,6 +28,7 @@ macro_rules! binary_op {
     };
 }
 
+#[derive(Default)]
 pub struct Vm {
     stack: Vec<Value>,
 }
