@@ -128,10 +128,14 @@ impl Scanner {
         }
     }
 
-    fn peek_char(&self) -> Option<char> {
+    fn peek_next(&self) -> Option<char> {
         self.source
             .get(self.current_index + 1)
             .map(|x| char::from(*x))
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.source.get(self.current_index).map(|x| char::from(*x))
     }
 
     fn pick_token_type(
@@ -140,7 +144,7 @@ impl Scanner {
         primary: TokenType,
         alternative: TokenType,
     ) -> TokenType {
-        if let Some(peeked_char) = self.peek_char() {
+        if let Some(peeked_char) = self.peek() {
             if peeked_char == expected {
                 self.current_index += 1;
                 primary
@@ -156,43 +160,50 @@ impl Scanner {
         String::from_utf8(self.source[start..end].to_vec()).unwrap()
     }
 
+    fn skip_whitespace(&mut self) {
+        loop {
+            if let Some(c) = self.peek() {
+                if c.is_ascii_whitespace() {
+                    self.previous_index += 1;
+                    self.current_index += 1;
+                    if c == '\n' {
+                        self.current_line += 1;
+                    }
+                } else if c == '/' {
+                    if let Some(next_char) = self.peek_next() {
+                        if next_char == '/' {
+                            while let Some(this_char) = self.peek() {
+                                if this_char != '\n' {
+                                    self.previous_index += 1;
+                                    self.current_index += 1;
+                                }
+                            }
+                        } else {
+                            return;
+                        }
+                    }
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+    }
+
     pub fn scan_token(&mut self) -> Token {
+        self.skip_whitespace();
+
         if let Some(current_byte) = self.source.get(self.current_index) {
             let current_char = char::from(*current_byte);
 
-            // Skip whitespace.
-            if current_char == '\n' {
-                self.current_line += 1;
-            }
-
-            if current_char.is_ascii_whitespace() {
-                // Increment previous because we are ignoring whitespace,
-                // so previous should start when the whitespace ends.
-                self.previous_index += 1;
-                self.current_index += 1;
-            } else if current_char == '/' {
-                if let Some(next_byte) = self.source.get(self.current_index + 1) {
-                    let next_char = char::from(*next_byte);
-                    if next_char == '/' {
-                        while let Some(peeked_char) = self.peek_char() {
-                            if peeked_char == '\n' {
-                                break;
-                            }
-
-                            // Increment previous and index,
-                            // because both should start when the comment ends.
-                            self.previous_index += 1;
-                            self.current_index += 1;
-                        }
-                    }
-                }
-            } else if is_alpha(current_char) {
+            return if is_alpha(current_char) {
                 // Gather characters into a string so we can check it against
                 // the map of keywords.
                 let mut string_so_far = String::new();
                 string_so_far.push(current_char);
 
-                while let Some(peeked_char) = self.peek_char() {
+                while let Some(peeked_char) = self.peek_next() {
                     if is_alpha(peeked_char) || peeked_char.is_ascii_digit() {
                         string_so_far.push(peeked_char);
                         self.current_index += 1;
@@ -216,14 +227,14 @@ impl Scanner {
                     string_so_far,
                 );
                 self.previous_index += length;
-                return token;
+                token
             } else if current_char.is_ascii_digit() {
                 // Consume the whole number, while advancing the index.
                 // Numbers can be fractional, like 123.45.
 
-                while let Some(peeked_char) = self.peek_char() {
+                while let Some(peeked_char) = self.peek_next() {
                     if peeked_char == '.' {
-                        if let Some(next_char) = self.peek_char() {
+                        if let Some(next_char) = self.peek_next() {
                             if next_char.is_ascii_digit() {
                                 self.current_index += 1;
                             }
@@ -247,7 +258,7 @@ impl Scanner {
                     token_str,
                 );
                 self.previous_index += length;
-                return token;
+                token
             } else {
                 let token_type = match current_char {
                     '(' => TokenType::LeftParen,
@@ -266,12 +277,12 @@ impl Scanner {
                     '<' => self.pick_token_type('=', TokenType::LessEqual, TokenType::Less),
                     '>' => self.pick_token_type('=', TokenType::GreaterEqual, TokenType::Greater),
                     '"' => {
-                        while let Some(peeked_char) = self.peek_char() {
+                        while let Some(peeked_char) = self.peek() {
                             if peeked_char == '"' {
                                 break;
                             }
 
-                            if let Some(next_char) = self.peek_char() {
+                            if let Some(next_char) = self.peek() {
                                 if next_char == '\n' {
                                     self.current_line += 1;
                                 }
@@ -280,7 +291,7 @@ impl Scanner {
                             self.current_index += 1;
                         }
 
-                        if self.peek_char().is_none() {
+                        if self.peek().is_none() {
                             TokenType::Error(ScannerError::UnterminatedString(self.current_line))
                         } else {
                             self.current_index += 1;
@@ -300,9 +311,8 @@ impl Scanner {
                     token_substr,
                 );
                 self.previous_index += length;
-                return token;
-            }
-            self.scan_token()
+                token
+            };
         } else {
             Token::new(
                 TokenType::Eof,
@@ -324,32 +334,43 @@ mod tests {
 
     #[test]
     fn scan_tokens() {
-        let input = "print 1.2 + 2;";
+        let inputs = ["print 1.2 + 2;", "1 / 2;"];
 
         let tests = [
-            Token::new(TokenType::Print, 0, 1, "print".to_string()),
-            Token::new(TokenType::Number, 6, 1, "1.2".to_string()),
-            Token::new(TokenType::Plus, 10, 1, "+".to_string()),
-            Token::new(TokenType::Number, 12, 1, "2".to_string()),
-            Token::new(TokenType::Semicolon, 13, 1, ";".to_string()),
-            Token::new(TokenType::Eof, 14, 1, "".to_string()),
+            vec![
+                Token::new(TokenType::Print, 0, 1, "print".to_string()),
+                Token::new(TokenType::Number, 6, 1, "1.2".to_string()),
+                Token::new(TokenType::Plus, 10, 1, "+".to_string()),
+                Token::new(TokenType::Number, 12, 1, "2".to_string()),
+                Token::new(TokenType::Semicolon, 13, 1, ";".to_string()),
+                Token::new(TokenType::Eof, 14, 1, "".to_string()),
+            ],
+            vec![
+                Token::new(TokenType::Number, 0, 1, "1".to_string()),
+                Token::new(TokenType::Slash, 2, 1, "/".to_string()),
+                Token::new(TokenType::Number, 4, 1, "2".to_string()),
+                Token::new(TokenType::Semicolon, 5, 1, ";".to_string()),
+                Token::new(TokenType::Eof, 6, 1, "".to_string()),
+            ],
         ];
 
-        let mut scanner = Scanner::new(input);
-        let mut tokens = vec![];
+        for (input, expected_for_input) in inputs.iter().zip(tests) {
+            let mut scanner = Scanner::new(input);
+            let mut tokens = vec![];
 
-        loop {
-            let token = scanner.scan_token();
-            let token_type = token.token_type;
+            loop {
+                let token = scanner.scan_token();
+                let token_type = token.token_type;
 
-            tokens.push(token);
-            if token_type == TokenType::Eof {
-                break;
+                tokens.push(token);
+                if token_type == TokenType::Eof {
+                    break;
+                }
             }
-        }
 
-        for (token, expected) in tokens.iter().zip(&tests) {
-            assert_eq!(token, expected);
+            for (token, expected) in tokens.iter().zip(&expected_for_input) {
+                assert_eq!(token, expected);
+            }
         }
     }
 }
