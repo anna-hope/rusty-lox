@@ -119,20 +119,28 @@ impl Parser {
                 break;
             }
 
-            self.error(self.current.as_ref().unwrap().value.clone().as_str());
+            self.error_at_current(self.current.as_ref().unwrap().value.clone().as_str());
         }
     }
 
-    fn error(&mut self, message: &str) {
+    fn error_at_current(&mut self, message: &str) {
+        self.error_at(self.current.as_ref().unwrap(), message);
+        self.panic_mode = true;
+        self.had_error = true;
+    }
+
+    fn error_at_previous(&mut self, message: &str) {
+        self.error_at(self.previous.as_ref().unwrap(), message);
+        self.panic_mode = true;
+        self.had_error = true;
+    }
+
+    fn error_at(&self, token: &Token, message: &str) {
         if self.panic_mode {
             return;
         }
 
-        let token = self.previous.as_ref().unwrap();
-
-        self.panic_mode = true;
         eprint!("[line {}] Error", token.line);
-
         match token.token_type {
             TokenType::Eof => eprint!(" at end"),
             TokenType::Error(_) => {
@@ -142,14 +150,13 @@ impl Parser {
         }
 
         eprintln!(": {}", message);
-        self.had_error = true;
     }
 
     fn consume(&mut self, token_type: TokenType, message: &str) {
         if self.current.as_ref().unwrap().token_type == token_type {
             self.advance();
         } else {
-            self.error(message);
+            self.error_at_current(message);
         }
     }
 
@@ -219,6 +226,11 @@ impl Parser {
         self.emit_constant(value.into());
     }
 
+    fn string(&mut self) {
+        let string = self.previous.as_ref().unwrap().value.clone();
+        self.emit_constant(string.into());
+    }
+
     fn unary(&mut self) {
         let operator_type = self.previous.as_ref().unwrap().token_type;
 
@@ -240,6 +252,7 @@ impl Parser {
             TokenType::Number => Some(Self::number),
             TokenType::False | TokenType::True | TokenType::Nil => Some(Self::literal),
             TokenType::Bang => Some(Self::unary),
+            TokenType::String => Some(Self::string),
             _ => None,
         }
     }
@@ -273,7 +286,7 @@ impl Parser {
                 infix_rule(self);
             }
         } else {
-            self.error("Expect expression");
+            self.error_at_previous("Expect expression");
         }
     }
 
