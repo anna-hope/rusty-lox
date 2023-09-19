@@ -156,8 +156,8 @@ impl Scanner {
         }
     }
 
-    fn get_source_substr(&self, start: usize, end: usize) -> String {
-        String::from_utf8(self.source[start..end].to_vec()).unwrap()
+    fn get_source_substring(&self, start: usize, end: usize) -> String {
+        unsafe { String::from_utf8_unchecked(self.source[start..end].to_vec()) }
     }
 
     fn skip_whitespace(&mut self) {
@@ -250,7 +250,7 @@ impl Scanner {
 
                 self.current_index += 1;
                 let length = self.current_index - self.previous_index;
-                let token_str = self.get_source_substr(self.previous_index, self.current_index);
+                let token_str = self.get_source_substring(self.previous_index, self.current_index);
                 let token = Token::new(
                     TokenType::Number,
                     self.previous_index,
@@ -277,21 +277,19 @@ impl Scanner {
                     '<' => self.pick_token_type('=', TokenType::LessEqual, TokenType::Less),
                     '>' => self.pick_token_type('=', TokenType::GreaterEqual, TokenType::Greater),
                     '"' => {
-                        while let Some(peeked_char) = self.peek() {
+                        while let Some(peeked_char) = self.peek_next() {
                             if peeked_char == '"' {
                                 break;
                             }
 
-                            if let Some(next_char) = self.peek() {
-                                if next_char == '\n' {
-                                    self.current_line += 1;
-                                }
+                            if peeked_char == '\n' {
+                                self.current_line += 1;
                             }
 
                             self.current_index += 1;
                         }
 
-                        if self.peek().is_none() {
+                        if self.peek_next().is_none() {
                             TokenType::Error(ScannerError::UnterminatedString(self.current_line))
                         } else {
                             self.current_index += 1;
@@ -303,12 +301,13 @@ impl Scanner {
 
                 self.current_index += 1;
                 let length = self.current_index - self.previous_index;
-                let token_substr = self.get_source_substr(self.previous_index, self.current_index);
+                let token_substring =
+                    self.get_source_substring(self.previous_index, self.current_index);
                 let token = Token::new(
                     token_type,
                     self.previous_index,
                     self.current_line,
-                    token_substr,
+                    token_substring,
                 );
                 self.previous_index += length;
                 token

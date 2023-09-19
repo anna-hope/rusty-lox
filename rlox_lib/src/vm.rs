@@ -1,4 +1,4 @@
-use std::ops::{Add, Div, Mul, Sub};
+use std::ops::{Div, Mul, Sub};
 use std::{env, fmt};
 
 use thiserror::Error;
@@ -73,7 +73,30 @@ impl Vm {
                     }
                     OpCode::Greater => self.comparison_op(PartialOrd::gt)?,
                     OpCode::Less => self.comparison_op(PartialOrd::lt)?,
-                    OpCode::Add => self.binary_op(Add::add)?,
+                    OpCode::Add => {
+                        let a = self.stack.get(self.stack.len() - 2).unwrap().clone();
+                        let b = self.stack.last().unwrap().clone();
+
+                        match (a, b) {
+                            (Value::String(a), Value::String(b)) => {
+                                self.stack.pop();
+                                self.stack.pop();
+                                let a = a.replace('"', "");
+                                let b = b.replace('"', "");
+                                let result = format!("\"{}\"", a + b.as_str());
+                                self.stack.push(result.into());
+                            }
+                            (Value::Number(a), Value::Number(b)) => {
+                                self.stack.pop();
+                                self.stack.pop();
+                                self.stack.push((a + b).into());
+                            }
+                            _ => {
+                                self.runtime_error("Operands must be two numbers or two strings.");
+                                return Err(InterpretError::Runtime);
+                            }
+                        }
+                    }
                     OpCode::Subtract => self.binary_op(Sub::sub)?,
                     OpCode::Multiply => self.binary_op(Mul::mul)?,
                     OpCode::Divide => self.binary_op(Div::div)?,

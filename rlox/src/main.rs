@@ -45,7 +45,7 @@ fn repl(vm: &mut Vm) {
 
         if let Ok(values) = vm.interpret(buffer) {
             for value in values {
-                println!("{value:?}");
+                println!("{value}");
             }
         }
     }
@@ -55,7 +55,7 @@ fn run_file(path: String, vm: &mut Vm) -> Result<()> {
     let source = fs::read_to_string(path).expect("Should be able to read the file");
     let values = vm.interpret(source)?;
     for value in values {
-        println!("{value:?}");
+        println!("{value}");
     }
     Ok(())
 }
