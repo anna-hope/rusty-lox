@@ -1,12 +1,14 @@
 use std::fmt;
 
+use ustr::Ustr;
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub enum Value {
     Bool(bool),
     #[default]
     Nil,
     Number(f64),
-    String(String),
+    String(Ustr),
 }
 
 impl Value {
@@ -53,6 +55,12 @@ impl From<bool> for Value {
 
 impl From<String> for Value {
     fn from(value: String) -> Self {
+        Self::String(Ustr::from(value.as_str()))
+    }
+}
+
+impl From<Ustr> for Value {
+    fn from(value: Ustr) -> Self {
         Self::String(value)
     }
 }

@@ -109,17 +109,14 @@ impl Parser {
     }
 
     fn advance(&mut self) {
-        self.previous = self.current.clone();
+        self.previous = self.current;
         loop {
             self.current = Some(self.scanner.scan_token());
-            if !matches!(
-                self.current.as_ref().unwrap().token_type,
-                TokenType::Error(_)
-            ) {
+            if !matches!(self.current.unwrap().token_type, TokenType::Error(_)) {
                 break;
             }
 
-            self.error_at_current(self.current.as_ref().unwrap().value.clone().as_str());
+            self.error_at_current(self.current.unwrap().value.as_str());
         }
     }
 
@@ -161,8 +158,7 @@ impl Parser {
     }
 
     fn emit_code(&mut self, code: OpCode) {
-        self.chunk
-            .add_code(code, self.previous.as_ref().unwrap().line);
+        self.chunk.add_code(code, self.previous.unwrap().line);
     }
 
     fn emit_codes(&mut self, code1: OpCode, code2: OpCode) {
@@ -180,7 +176,7 @@ impl Parser {
     }
 
     fn binary(&mut self) {
-        let operator_type = self.previous.as_ref().unwrap().token_type;
+        let operator_type = self.previous.unwrap().token_type;
         let precedence: Precedence = operator_type.into();
         self.parse_precedence(precedence + 1);
 
@@ -227,12 +223,12 @@ impl Parser {
     }
 
     fn string(&mut self) {
-        let string = self.previous.as_ref().unwrap().value.clone();
+        let string = self.previous.unwrap().value;
         self.emit_constant(string.into());
     }
 
     fn unary(&mut self) {
-        let operator_type = self.previous.as_ref().unwrap().token_type;
+        let operator_type = self.previous.unwrap().token_type;
 
         // Compile the operand.
         self.parse_precedence(Precedence::Unary);

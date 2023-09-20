@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use lazy_static::lazy_static;
 use thiserror::Error;
+use ustr::Ustr;
 
 lazy_static! {
     static ref KEYWORDS: HashMap<String, TokenType> = {
@@ -91,12 +92,12 @@ pub enum TokenType {
     Eof,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token {
     pub token_type: TokenType,
     pub start: usize,
     pub line: usize,
-    pub value: String,
+    pub value: Ustr,
 }
 
 impl Token {
@@ -105,7 +106,7 @@ impl Token {
             token_type,
             start,
             line,
-            value,
+            value: Ustr::from(value.as_str()),
         }
     }
 }
