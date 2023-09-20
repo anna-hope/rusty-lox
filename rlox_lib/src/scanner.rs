@@ -145,7 +145,7 @@ impl Scanner {
         primary: TokenType,
         alternative: TokenType,
     ) -> TokenType {
-        if let Some(peeked_char) = self.peek() {
+        if let Some(peeked_char) = self.peek_next() {
             if peeked_char == expected {
                 self.current_index += 1;
                 primary
