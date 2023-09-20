@@ -71,6 +71,9 @@ impl Vm {
                     OpCode::Nil => self.stack.push(Value::Nil),
                     OpCode::True => self.stack.push(true.into()),
                     OpCode::False => self.stack.push(false.into()),
+                    OpCode::Pop => {
+                        self.stack.pop();
+                    }
                     OpCode::Equal => {
                         let b = self.stack.pop().unwrap();
                         let a = self.stack.pop().unwrap();
