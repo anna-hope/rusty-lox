@@ -17,6 +17,7 @@ pub enum OpCode {
     Not,
     Negate,
     Return,
+    Print,
 }
 
 impl Display for OpCode {

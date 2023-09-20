@@ -39,12 +39,14 @@ impl Vm {
         let chunks = parser.compile()?;
         let mut results = vec![];
         for chunk in chunks.iter() {
-            results.push(self.run(chunk)?);
+            if let Some(value) = self.run(chunk)? {
+                results.push(value);
+            }
         }
         Ok(results)
     }
 
-    fn run(&mut self, chunk: &Chunk) -> Result<Value> {
+    fn run(&mut self, chunk: &Chunk) -> Result<Option<Value>> {
         loop {
             for (index, code) in chunk.codes.iter().enumerate() {
                 self.line = chunk.lines[index];
@@ -58,7 +60,10 @@ impl Vm {
                 }
 
                 match code {
-                    OpCode::Return => return Ok(self.stack.pop().unwrap()),
+                    OpCode::Print => {
+                        println!("{}", self.stack.pop().unwrap());
+                    }
+                    OpCode::Return => return Ok(self.stack.pop()),
                     OpCode::Constant(index) => {
                         let constant = chunk.read_constant(*index);
                         self.stack.push(constant.clone());

@@ -95,8 +95,11 @@ impl Parser {
 
     pub fn compile(&mut self) -> Result<Vec<Chunk>> {
         self.advance();
-        self.expression();
-        self.consume(TokenType::Eof, "Expect end of expression");
+
+        while !self.match_token(TokenType::Eof) {
+            self.declaration();
+        }
+
         self.end_compiler();
 
         let chunks = vec![self.chunk.clone()];
@@ -155,6 +158,18 @@ impl Parser {
         } else {
             self.error_at_current(message);
         }
+    }
+
+    fn check(&self, token_type: TokenType) -> bool {
+        self.current.unwrap().token_type == token_type
+    }
+
+    fn match_token(&mut self, token_type: TokenType) -> bool {
+        if !self.check(token_type) {
+            return false;
+        }
+        self.advance();
+        true
     }
 
     fn emit_code(&mut self, code: OpCode) {
@@ -288,6 +303,22 @@ impl Parser {
 
     fn expression(&mut self) {
         self.parse_precedence(Precedence::Assignment);
+    }
+
+    fn print_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after value.");
+        self.emit_code(OpCode::Print);
+    }
+
+    fn declaration(&mut self) {
+        self.statement();
+    }
+
+    fn statement(&mut self) {
+        if self.match_token(TokenType::Print) {
+            self.print_statement();
+        }
     }
 
     fn emit_return(&mut self) {
