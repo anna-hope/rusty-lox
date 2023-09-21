@@ -7,6 +7,9 @@ pub enum OpCode {
     Nil,
     True,
     False,
+    Pop,
+    GetGlobal(usize),
+    DefineGlobal(usize),
     Equal,
     Greater,
     Less,
@@ -18,7 +21,6 @@ pub enum OpCode {
     Negate,
     Return,
     Print,
-    Pop,
 }
 
 impl Display for OpCode {
@@ -50,9 +52,18 @@ impl Chunk {
         self.lines.push(line);
     }
 
-    pub fn add_constant(&mut self, value: Value, line: usize) {
+    /// Pushes a value to the constant store, returning its index.
+    pub fn push_constant(&mut self, value: Value) -> usize {
         self.constants.push(value);
-        let index = self.constants.len() - 1;
+        self.constants.len() - 1
+    }
+
+    /// Pushes a value to the constants store and adds a code
+    /// wrapping its index to the chunk.
+    /// This method calls [Self::push_constant] internally,
+    /// therefore that method should not be called before this one for the same value.
+    pub fn add_constant_code(&mut self, value: Value, line: usize) {
+        let index = self.push_constant(value);
         self.add_code(OpCode::Constant(index), line);
     }
 
@@ -70,7 +81,7 @@ impl Chunk {
 
         let instruction = self.codes[offset];
         match instruction {
-            OpCode::Constant(index) => {
+            OpCode::Constant(index) | OpCode::DefineGlobal(index) | OpCode::GetGlobal(index) => {
                 let value = &self.constants[index];
                 println!("{instruction:-16} {index:4} '{value:?}'");
                 offset + 1

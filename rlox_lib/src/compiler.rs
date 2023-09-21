@@ -242,6 +242,15 @@ impl Parser {
         self.emit_constant(string.into());
     }
 
+    fn named_variable(&mut self, name: Token) {
+        let arg = self.identifier_constant(name);
+        self.emit_code(OpCode::GetGlobal(arg));
+    }
+
+    fn variable(&mut self) {
+        self.named_variable(self.previous.unwrap());
+    }
+
     fn unary(&mut self) {
         let operator_type = self.previous.unwrap().token_type;
 
@@ -264,7 +273,8 @@ impl Parser {
             TokenType::False | TokenType::True | TokenType::Nil => Some(Self::literal),
             TokenType::Bang => Some(Self::unary),
             TokenType::String => Some(Self::string),
-            _ => None,
+            TokenType::Identifier => Some(Self::variable),
+            _ => todo!(),
         }
     }
 
@@ -301,8 +311,38 @@ impl Parser {
         }
     }
 
+    fn identifier_constant(&mut self, name: Token) -> usize {
+        self.chunk.push_constant(Value::Obj(name.value))
+    }
+
+    fn parse_variable(&mut self, error_message: &str) -> usize {
+        self.consume(TokenType::Identifier, error_message);
+        self.identifier_constant(self.previous.unwrap())
+    }
+
+    fn define_variable(&mut self, global_index: usize) {
+        self.emit_code(OpCode::DefineGlobal(global_index));
+    }
+
     fn expression(&mut self) {
         self.parse_precedence(Precedence::Assignment);
+    }
+
+    fn var_declaration(&mut self) {
+        let global = self.parse_variable("Expect variable name.");
+
+        if self.match_token(TokenType::Equal) {
+            self.expression();
+        } else {
+            self.emit_code(OpCode::Nil);
+        }
+
+        self.consume(
+            TokenType::Semicolon,
+            "Expect ';' after variable declaration.",
+        );
+
+        self.define_variable(global);
     }
 
     fn expression_statement(&mut self) {
@@ -317,8 +357,44 @@ impl Parser {
         self.emit_code(OpCode::Print);
     }
 
+    fn synchronize(&mut self) {
+        self.panic_mode = false;
+
+        while self.current.unwrap().token_type != TokenType::Eof {
+            if self.previous.unwrap().token_type == TokenType::Semicolon {
+                return;
+            }
+
+            match self.current.unwrap().token_type {
+                TokenType::Class
+                | TokenType::Fun
+                | TokenType::Var
+                | TokenType::For
+                | TokenType::If
+                | TokenType::While
+                | TokenType::Print
+                | TokenType::Return => {
+                    return;
+                }
+                _ => {
+                    // Do nothing.
+                }
+            }
+
+            self.advance();
+        }
+    }
+
     fn declaration(&mut self) {
-        self.statement();
+        if self.match_token(TokenType::Var) {
+            self.var_declaration();
+        } else {
+            self.statement();
+        }
+
+        if self.panic_mode {
+            self.synchronize();
+        }
     }
 
     fn statement(&mut self) {
@@ -335,7 +411,7 @@ impl Parser {
 
     fn emit_constant(&mut self, value: Value) {
         self.chunk
-            .add_constant(value, self.previous.as_ref().unwrap().line);
+            .add_constant_code(value, self.previous.unwrap().line);
     }
 }
 
@@ -345,7 +421,7 @@ mod tests {
 
     #[test]
     fn compile_arithmetic_expression() {
-        let input = "1 + 1";
+        let input = "1 + 1;";
         let mut parser = Parser::new(input);
         let chunks = parser.compile().unwrap();
 

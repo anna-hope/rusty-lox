@@ -1,7 +1,9 @@
 use std::ops::{Div, Mul, Sub};
 use std::{env, fmt};
 
+use fnv::FnvHashMap;
 use thiserror::Error;
+use ustr::Ustr;
 
 use crate::{
     chunk::{Chunk, OpCode},
@@ -24,6 +26,7 @@ pub enum InterpretError {
 pub struct Vm {
     stack: Vec<Value>,
     line: usize,
+    globals: FnvHashMap<Ustr, Value>,
 }
 
 impl Vm {
@@ -31,6 +34,7 @@ impl Vm {
         Self {
             stack: Vec::with_capacity(256),
             line: 0,
+            globals: FnvHashMap::default(),
         }
     }
 
@@ -72,6 +76,23 @@ impl Vm {
                     OpCode::True => self.stack.push(true.into()),
                     OpCode::False => self.stack.push(false.into()),
                     OpCode::Pop => {
+                        self.stack.pop();
+                    }
+                    OpCode::GetGlobal(index) => {
+                        let value = chunk.read_constant(*index);
+                        let name = value.name().unwrap();
+                        if let Some(variable) = self.globals.get(&name) {
+                            self.stack.push(variable.clone());
+                        } else {
+                            self.runtime_error(format!("Undefined variable: {name}"));
+                            return Err(InterpretError::Runtime);
+                        }
+                    }
+                    OpCode::DefineGlobal(index) => {
+                        let value = chunk.read_constant(*index);
+                        let name = value.name().unwrap();
+                        self.globals
+                            .insert(name, self.stack.last().unwrap().clone());
                         self.stack.pop();
                     }
                     OpCode::Equal => {
@@ -188,10 +209,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn evaluate() {
-        let input = "!(5 - 4 > 3 * 2 == !nil)";
+    fn evaluate_bool() {
+        let input = "!(5 - 4 > 3 * 2 == !nil);";
         let mut vm = Vm::new();
         let value = &vm.interpret(input.to_string()).unwrap()[0];
         assert_eq!(value, &Value::Bool(true));
+    }
+
+    #[test]
+    fn evaluate_string() {
+        let input = r#"
+var beverage = "cafe au lait";
+var breakfast = "beignets with " + beverage;
+breakfast;
+"#;
+        let mut vm = Vm::new();
+        let result = &vm.interpret(input.to_string()).unwrap();
+        dbg!(&result);
+        dbg!(&vm.stack);
+        // assert_eq!(value, &Value::String("beignets with cafe au lait".into()));
     }
 }

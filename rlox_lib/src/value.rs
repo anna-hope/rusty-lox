@@ -9,6 +9,7 @@ pub enum Value {
     Nil,
     Number(f64),
     String(Ustr),
+    Obj(Ustr),
 }
 
 impl Value {
@@ -27,6 +28,13 @@ impl Value {
     pub fn is_string(&self) -> bool {
         matches!(self, Self::String(_))
     }
+
+    pub fn name(&self) -> Option<Ustr> {
+        match self {
+            Self::Obj(name) => Some(*name),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Value {
@@ -36,6 +44,7 @@ impl fmt::Display for Value {
             Self::Bool(value) => value.to_string(),
             Self::Nil => "nil".to_string(),
             Self::String(string) => string.to_owned(),
+            Self::Obj(value) => value.to_string(),
         };
         write!(f, "{string}")
     }
