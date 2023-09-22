@@ -33,7 +33,7 @@ pub struct Vm {
 impl Vm {
     pub fn new() -> Self {
         Self {
-            stack: Vec::with_capacity(256),
+            stack: Vec::with_capacity(u8::MAX.into()),
             line: 0,
             globals: FnvHashMap::default(),
         }
