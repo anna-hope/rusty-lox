@@ -210,7 +210,7 @@ impl Parser {
         }
     }
 
-    fn literal(&mut self) {
+    fn literal(&mut self, _can_assign: bool) {
         let previous_type = self.previous.as_ref().unwrap().token_type;
 
         match previous_type {
@@ -221,12 +221,12 @@ impl Parser {
         }
     }
 
-    fn grouping(&mut self) {
+    fn grouping(&mut self, _can_assign: bool) {
         self.expression();
         self.consume(TokenType::RightParen, "Expect ')' after expression.");
     }
 
-    fn number(&mut self) {
+    fn number(&mut self, _can_assign: bool) {
         let value = self
             .previous
             .as_ref()
@@ -237,21 +237,27 @@ impl Parser {
         self.emit_constant(value.into());
     }
 
-    fn string(&mut self) {
+    fn string(&mut self, _can_assign: bool) {
         let string = self.previous.unwrap().value;
         self.emit_constant(string.into());
     }
 
-    fn named_variable(&mut self, name: Token) {
+    fn named_variable(&mut self, name: Token, can_assign: bool) {
         let arg = self.identifier_constant(name);
-        self.emit_code(OpCode::GetGlobal(arg));
+
+        if can_assign && self.match_token(TokenType::Equal) {
+            self.expression();
+            self.emit_code(OpCode::SetGlobal(arg));
+        } else {
+            self.emit_code(OpCode::GetGlobal(arg));
+        }
     }
 
-    fn variable(&mut self) {
-        self.named_variable(self.previous.unwrap());
+    fn variable(&mut self, can_assign: bool) {
+        self.named_variable(self.previous.unwrap(), can_assign);
     }
 
-    fn unary(&mut self) {
+    fn unary(&mut self, _can_assign: bool) {
         let operator_type = self.previous.unwrap().token_type;
 
         // Compile the operand.
@@ -265,7 +271,7 @@ impl Parser {
         }
     }
 
-    fn get_prefix_rule(&self) -> Option<fn(&mut Parser)> {
+    fn get_prefix_rule(&self) -> Option<fn(&mut Parser, bool)> {
         match self.previous.as_ref().unwrap().token_type {
             TokenType::LeftParen => Some(Self::grouping),
             TokenType::Minus => Some(Self::unary),
@@ -294,7 +300,8 @@ impl Parser {
         self.advance();
 
         if let Some(prefix_rule) = self.get_prefix_rule() {
-            prefix_rule(self);
+            let can_assign = precedence <= Precedence::Assignment;
+            prefix_rule(self, can_assign);
 
             while precedence <= self.current.as_ref().unwrap().token_type.into() {
                 self.advance();
@@ -305,6 +312,10 @@ impl Parser {
                     )
                 });
                 infix_rule(self);
+            }
+
+            if can_assign && self.match_token(TokenType::Equal) {
+                self.error_at_previous("Invalid assignment target.");
             }
         } else {
             self.error_at_previous("Expect expression");

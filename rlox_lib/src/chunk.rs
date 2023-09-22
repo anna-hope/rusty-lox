@@ -10,6 +10,7 @@ pub enum OpCode {
     Pop,
     GetGlobal(usize),
     DefineGlobal(usize),
+    SetGlobal(usize),
     Equal,
     Greater,
     Less,
@@ -81,7 +82,10 @@ impl Chunk {
 
         let instruction = self.codes[offset];
         match instruction {
-            OpCode::Constant(index) | OpCode::DefineGlobal(index) | OpCode::GetGlobal(index) => {
+            OpCode::Constant(index)
+            | OpCode::DefineGlobal(index)
+            | OpCode::GetGlobal(index)
+            | OpCode::SetGlobal(index) => {
                 let value = &self.constants[index];
                 println!("{instruction:-16} {index:4} '{value:?}'");
                 offset + 1

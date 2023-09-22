@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::ops::{Div, Mul, Sub};
 use std::{env, fmt};
 
@@ -94,6 +95,16 @@ impl Vm {
                         self.globals
                             .insert(name, self.stack.last().unwrap().clone());
                         self.stack.pop();
+                    }
+                    OpCode::SetGlobal(index) => {
+                        let value = chunk.read_constant(*index);
+                        let name = value.name().unwrap();
+                        if let Entry::Occupied(mut e) = self.globals.entry(name) {
+                            e.insert(self.stack.last().unwrap().clone());
+                        } else {
+                            self.runtime_error(format!("Undefined variable '{name}'"));
+                            return Err(InterpretError::Runtime);
+                        }
                     }
                     OpCode::Equal => {
                         let b = self.stack.pop().unwrap();
