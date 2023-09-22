@@ -158,6 +158,8 @@ impl Scanner {
     }
 
     fn get_source_substring(&self, start: usize, end: usize) -> String {
+        // SAFETY: We know the original input is valid UTF-8 because it was a String,
+        // so it's safe to rebuild a String from this slice without checking.
         unsafe { String::from_utf8_unchecked(self.source[start..end].to_vec()) }
     }
 
