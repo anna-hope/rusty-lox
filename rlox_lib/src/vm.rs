@@ -8,7 +8,7 @@ use ustr::Ustr;
 
 use crate::{
     chunk::{Chunk, OpCode},
-    compiler::{CompileError, Parser},
+    compiler::{Parser, ParserError},
     value::Value,
 };
 
@@ -17,7 +17,7 @@ pub type Result<T> = std::result::Result<T, InterpretError>;
 #[derive(Debug, Error)]
 pub enum InterpretError {
     #[error("Compile error")]
-    Compile(#[from] CompileError),
+    Compile(#[from] ParserError),
 
     #[error("Runtime error")]
     Runtime,
@@ -79,8 +79,16 @@ impl Vm {
                     OpCode::Pop => {
                         self.stack.pop();
                     }
-                    OpCode::GetGlobal(index) => {
-                        let value = chunk.read_constant(*index);
+                    OpCode::GetLocal(slot) => {
+                        let value = self.stack.get(*slot).unwrap();
+                        self.stack.push(value.clone());
+                    }
+                    OpCode::SetLocal(slot) => {
+                        let value = self.stack.last().unwrap();
+                        self.stack[*slot] = value.clone();
+                    }
+                    OpCode::GetGlobal(slot) => {
+                        let value = chunk.read_constant(*slot);
                         let name = value.name().unwrap();
                         if let Some(variable) = self.globals.get(&name) {
                             self.stack.push(variable.clone());
@@ -89,15 +97,15 @@ impl Vm {
                             return Err(InterpretError::Runtime);
                         }
                     }
-                    OpCode::DefineGlobal(index) => {
-                        let value = chunk.read_constant(*index);
+                    OpCode::DefineGlobal(slot) => {
+                        let value = chunk.read_constant(*slot);
                         let name = value.name().unwrap();
                         self.globals
                             .insert(name, self.stack.last().unwrap().clone());
                         self.stack.pop();
                     }
-                    OpCode::SetGlobal(index) => {
-                        let value = chunk.read_constant(*index);
+                    OpCode::SetGlobal(slot) => {
+                        let value = chunk.read_constant(*slot);
                         let name = value.name().unwrap();
                         if let Entry::Occupied(mut e) = self.globals.entry(name) {
                             e.insert(self.stack.last().unwrap().clone());

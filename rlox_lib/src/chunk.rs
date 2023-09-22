@@ -1,6 +1,8 @@
 use crate::value::Value;
 use std::fmt::{Display, Formatter};
 
+type StackSlot = usize;
+
 #[derive(Debug, Copy, Clone)]
 pub enum OpCode {
     Constant(usize),
@@ -8,9 +10,11 @@ pub enum OpCode {
     True,
     False,
     Pop,
-    GetGlobal(usize),
-    DefineGlobal(usize),
-    SetGlobal(usize),
+    GetLocal(StackSlot),
+    SetLocal(StackSlot),
+    GetGlobal(StackSlot),
+    DefineGlobal(StackSlot),
+    SetGlobal(StackSlot),
     Equal,
     Greater,
     Less,
@@ -89,6 +93,10 @@ impl Chunk {
                 let value = &self.constants[index];
                 println!("{instruction:-16} {index:4} '{value:?}'");
                 offset + 1
+            }
+            OpCode::GetLocal(index) | OpCode::SetLocal(index) => {
+                println!("{instruction:-16} {index:4}");
+                offset + 2
             }
             _ => {
                 println!("{instruction}");

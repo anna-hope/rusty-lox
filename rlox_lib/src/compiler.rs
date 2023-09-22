@@ -8,13 +8,28 @@ use crate::chunk::{Chunk, OpCode};
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::Value;
 
+pub type Result<T> = std::result::Result<T, ParserError>;
+
+type CompilerResult<T> = std::result::Result<T, CompilerError>;
+
 #[derive(Debug, Error)]
-pub enum CompileError {
-    #[error("Compile error")]
-    Error,
+pub enum CompilerError {
+    #[error("Already a variable with this name in this scope.")]
+    SameNameVariableInScope,
+
+    #[error("Can't read local variable in its own initializer.")]
+    ReadLocalInInitializer,
 }
 
-pub type Result<T> = std::result::Result<T, CompileError>;
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub enum ParserError {
+    #[error("Compiler error: {0}")]
+    Compiler(#[from] CompilerError),
+
+    #[error("CompileError")]
+    Error,
+}
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialOrd, PartialEq)]
@@ -70,6 +85,61 @@ impl From<TokenType> for Precedence {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct Local {
+    name: Token,
+    depth: usize,
+    initialized: bool,
+}
+
+impl Local {
+    fn new(name: Token, depth: usize) -> Self {
+        Self {
+            name,
+            depth,
+            initialized: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct Compiler {
+    locals: Vec<Local>,
+    scope_depth: usize,
+}
+
+impl Compiler {
+    fn new() -> Self {
+        Self {
+            locals: Vec::with_capacity(u8::MAX.into()),
+            scope_depth: 0,
+        }
+    }
+
+    fn add_local(&mut self, name: Token) -> CompilerResult<()> {
+        let local = Local::new(name, self.scope_depth);
+        if self.locals.contains(&local) {
+            return Err(CompilerError::SameNameVariableInScope);
+        }
+
+        self.locals.push(local);
+        Ok(())
+    }
+
+    fn resolve_local(&self, name: Token) -> CompilerResult<Option<usize>> {
+        for (index, local) in self.locals.iter().enumerate().rev() {
+            if local.name == name {
+                return if local.initialized {
+                    Ok(Some(index))
+                } else {
+                    Err(CompilerError::ReadLocalInInitializer)
+                };
+            }
+        }
+        Ok(None)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Parser {
     scanner: Scanner,
@@ -78,6 +148,7 @@ pub struct Parser {
     chunk: Chunk,
     had_error: bool,
     panic_mode: bool,
+    compiler: Compiler,
 }
 
 impl Parser {
@@ -90,6 +161,7 @@ impl Parser {
             chunk: Chunk::new(),
             had_error: false,
             panic_mode: false,
+            compiler: Compiler::new(),
         }
     }
 
@@ -97,7 +169,7 @@ impl Parser {
         self.advance();
 
         while !self.match_token(TokenType::Eof) {
-            self.declaration();
+            self.declaration()?;
         }
 
         self.end_compiler();
@@ -105,7 +177,7 @@ impl Parser {
         let chunks = vec![self.chunk.clone()];
 
         if self.had_error {
-            Err(CompileError::Error)
+            Err(ParserError::Error)
         } else {
             Ok(chunks)
         }
@@ -190,6 +262,22 @@ impl Parser {
         }
     }
 
+    fn begin_scope(&mut self) {
+        self.compiler.scope_depth += 1;
+    }
+
+    fn end_scope(&mut self) {
+        self.compiler.scope_depth -= 1;
+
+        // Pop all the locals at the current scope.
+        while self.compiler.locals.len() > 0
+            && self.compiler.locals.last().unwrap().depth > self.compiler.scope_depth
+        {
+            self.emit_code(OpCode::Pop);
+            self.compiler.locals.pop();
+        }
+    }
+
     fn binary(&mut self) {
         let operator_type = self.previous.unwrap().token_type;
         let precedence: Precedence = operator_type.into();
@@ -243,13 +331,18 @@ impl Parser {
     }
 
     fn named_variable(&mut self, name: Token, can_assign: bool) {
-        let arg = self.identifier_constant(name);
+        let (get_op, set_op) = if let Ok(Some(arg)) = self.compiler.resolve_local(name) {
+            (OpCode::GetLocal(arg), OpCode::SetLocal(arg))
+        } else {
+            let arg = self.identifier_constant(name);
+            (OpCode::GetGlobal(arg), OpCode::SetGlobal(arg))
+        };
 
         if can_assign && self.match_token(TokenType::Equal) {
             self.expression();
-            self.emit_code(OpCode::SetGlobal(arg));
+            self.emit_code(set_op);
         } else {
-            self.emit_code(OpCode::GetGlobal(arg));
+            self.emit_code(get_op);
         }
     }
 
@@ -326,12 +419,33 @@ impl Parser {
         self.chunk.push_constant(Value::Obj(name.value))
     }
 
-    fn parse_variable(&mut self, error_message: &str) -> usize {
+    fn declare_variable(&mut self) -> Result<()> {
+        if self.compiler.scope_depth == 0 {
+            return Ok(());
+        }
+
+        let name = self.previous.unwrap();
+        self.compiler.add_local(name)?;
+        Ok(())
+    }
+
+    fn parse_variable(&mut self, error_message: &str) -> Result<usize> {
         self.consume(TokenType::Identifier, error_message);
-        self.identifier_constant(self.previous.unwrap())
+
+        self.declare_variable()?;
+        if self.compiler.scope_depth > 0 {
+            return Ok(0);
+        }
+
+        Ok(self.identifier_constant(self.previous.unwrap()))
     }
 
     fn define_variable(&mut self, global_index: usize) {
+        if self.compiler.scope_depth > 0 {
+            self.compiler.locals.last_mut().unwrap().initialized = true;
+            return;
+        }
+
         self.emit_code(OpCode::DefineGlobal(global_index));
     }
 
@@ -339,8 +453,17 @@ impl Parser {
         self.parse_precedence(Precedence::Assignment);
     }
 
-    fn var_declaration(&mut self) {
-        let global = self.parse_variable("Expect variable name.");
+    fn block(&mut self) -> Result<()> {
+        while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof) {
+            self.declaration()?;
+        }
+
+        self.consume(TokenType::RightBrace, "Expect '}' after block.");
+        Ok(())
+    }
+
+    fn var_declaration(&mut self) -> Result<()> {
+        let global = self.parse_variable("Expect variable name.")?;
 
         if self.match_token(TokenType::Equal) {
             self.expression();
@@ -354,6 +477,7 @@ impl Parser {
         );
 
         self.define_variable(global);
+        Ok(())
     }
 
     fn expression_statement(&mut self) {
@@ -396,24 +520,31 @@ impl Parser {
         }
     }
 
-    fn declaration(&mut self) {
+    fn declaration(&mut self) -> Result<()> {
         if self.match_token(TokenType::Var) {
-            self.var_declaration();
+            self.var_declaration()?;
         } else {
-            self.statement();
+            self.statement()?;
         }
 
         if self.panic_mode {
             self.synchronize();
         }
+        Ok(())
     }
 
-    fn statement(&mut self) {
+    fn statement(&mut self) -> Result<()> {
         if self.match_token(TokenType::Print) {
             self.print_statement();
+        } else if self.match_token(TokenType::LeftBrace) {
+            self.begin_scope();
+            self.block()?;
+            self.end_scope();
         } else {
             self.expression_statement();
         }
+
+        Ok(())
     }
 
     fn emit_return(&mut self) {
