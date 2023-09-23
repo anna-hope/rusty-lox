@@ -28,6 +28,7 @@ pub struct Vm {
     stack: Vec<Value>,
     line: usize,
     globals: FnvHashMap<Ustr, Value>,
+    ip: usize,
 }
 
 impl Vm {
@@ -36,6 +37,7 @@ impl Vm {
             stack: Vec::with_capacity(u8::MAX.into()),
             line: 0,
             globals: FnvHashMap::default(),
+            ip: 0,
         }
     }
 
@@ -53,119 +55,120 @@ impl Vm {
 
     fn run(&mut self, chunk: &Chunk) -> Result<Option<Value>> {
         loop {
-            for (index, code) in chunk.codes.iter().enumerate() {
-                self.line = chunk.lines[index];
+            let code = chunk.codes[self.ip];
+            self.line = chunk.lines[self.ip];
 
-                if env::var("DEBUG_TRACE_EXECUTION") == Ok("1".to_string()) {
-                    print!("          ");
-                    for slot in self.stack.iter() {
-                        println!("[ {slot:?} ]")
-                    }
-                    chunk.disassemble_instruction(index);
+            if env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into()) {
+                print!("          ");
+                for slot in self.stack.iter() {
+                    println!("[ {slot:?} ]")
                 }
+                chunk.disassemble_instruction(self.ip);
+            }
 
-                match code {
-                    OpCode::Print => {
-                        println!("{}", self.stack.pop().unwrap());
+            self.ip += 1;
+
+            match code {
+                OpCode::Print => {
+                    println!("{}", self.stack.pop().unwrap());
+                }
+                OpCode::Return => return Ok(self.stack.pop()),
+                OpCode::Constant(index) => {
+                    let constant = chunk.read_constant(index);
+                    self.stack.push(constant.clone());
+                }
+                OpCode::Nil => self.stack.push(Value::Nil),
+                OpCode::True => self.stack.push(true.into()),
+                OpCode::False => self.stack.push(false.into()),
+                OpCode::Pop => {
+                    self.stack.pop();
+                }
+                OpCode::GetLocal(slot) => {
+                    let value = self.stack.get(slot).unwrap();
+                    self.stack.push(value.clone());
+                }
+                OpCode::SetLocal(slot) => {
+                    let value = self.stack.last().unwrap();
+                    self.stack[slot] = value.clone();
+                }
+                OpCode::GetGlobal(slot) => {
+                    let value = chunk.read_constant(slot);
+                    let name = value.name().unwrap();
+                    if let Some(variable) = self.globals.get(&name) {
+                        self.stack.push(variable.clone());
+                    } else {
+                        self.runtime_error(format!("Undefined variable: {name}"));
+                        return Err(InterpretError::Runtime);
                     }
-                    OpCode::Return => return Ok(self.stack.pop()),
-                    OpCode::Constant(index) => {
-                        let constant = chunk.read_constant(*index);
-                        self.stack.push(constant.clone());
+                }
+                OpCode::DefineGlobal(slot) => {
+                    let value = chunk.read_constant(slot);
+                    let name = value.name().unwrap();
+                    self.globals
+                        .insert(name, self.stack.last().unwrap().clone());
+                    self.stack.pop();
+                }
+                OpCode::SetGlobal(slot) => {
+                    let value = chunk.read_constant(slot);
+                    let name = value.name().unwrap();
+                    if let Entry::Occupied(mut e) = self.globals.entry(name) {
+                        e.insert(self.stack.last().unwrap().clone());
+                    } else {
+                        self.runtime_error(format!("Undefined variable '{name}'"));
+                        return Err(InterpretError::Runtime);
                     }
-                    OpCode::Nil => self.stack.push(Value::Nil),
-                    OpCode::True => self.stack.push(true.into()),
-                    OpCode::False => self.stack.push(false.into()),
-                    OpCode::Pop => {
-                        self.stack.pop();
-                    }
-                    OpCode::GetLocal(slot) => {
-                        let value = self.stack.get(*slot).unwrap();
-                        self.stack.push(value.clone());
-                    }
-                    OpCode::SetLocal(slot) => {
-                        let value = self.stack.last().unwrap();
-                        self.stack[*slot] = value.clone();
-                    }
-                    OpCode::GetGlobal(slot) => {
-                        let value = chunk.read_constant(*slot);
-                        let name = value.name().unwrap();
-                        if let Some(variable) = self.globals.get(&name) {
-                            self.stack.push(variable.clone());
-                        } else {
-                            self.runtime_error(format!("Undefined variable: {name}"));
+                }
+                OpCode::Equal => {
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.pop().unwrap();
+                    self.stack.push((a == b).into());
+                }
+                OpCode::Greater => self.comparison_op(PartialOrd::gt)?,
+                OpCode::Less => self.comparison_op(PartialOrd::lt)?,
+                OpCode::Add => {
+                    let a = self.stack.get(self.stack.len() - 2).unwrap().clone();
+                    let b = self.stack.last().unwrap().clone();
+
+                    match (a, b) {
+                        (Value::String(a), Value::String(b)) => {
+                            self.stack.pop();
+                            self.stack.pop();
+                            let a = a.replace('"', "");
+                            let b = b.replace('"', "");
+                            let result = format!("\"{}\"", a + b.as_str());
+                            self.stack.push(result.into());
+                        }
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.stack.pop();
+                            self.stack.pop();
+                            self.stack.push((a + b).into());
+                        }
+                        _ => {
+                            self.runtime_error("Operands must be two numbers or two strings.");
                             return Err(InterpretError::Runtime);
                         }
                     }
-                    OpCode::DefineGlobal(slot) => {
-                        let value = chunk.read_constant(*slot);
-                        let name = value.name().unwrap();
-                        self.globals
-                            .insert(name, self.stack.last().unwrap().clone());
-                        self.stack.pop();
-                    }
-                    OpCode::SetGlobal(slot) => {
-                        let value = chunk.read_constant(*slot);
-                        let name = value.name().unwrap();
-                        if let Entry::Occupied(mut e) = self.globals.entry(name) {
-                            e.insert(self.stack.last().unwrap().clone());
-                        } else {
-                            self.runtime_error(format!("Undefined variable '{name}'"));
+                }
+                OpCode::Subtract => self.binary_op(Sub::sub)?,
+                OpCode::Multiply => self.binary_op(Mul::mul)?,
+                OpCode::Divide => self.binary_op(Div::div)?,
+                OpCode::Not => {
+                    let bool_val = self.stack.pop().unwrap().is_falsey();
+                    self.stack.push(bool_val.into());
+                }
+                OpCode::Negate => {
+                    // Inspect the value from the stack without popping it first,
+                    // in case it's not a number.
+                    let value = self.stack.last().unwrap().clone();
+
+                    match value {
+                        Value::Number(value) => {
+                            self.stack.pop();
+                            self.stack.push(Value::Number(-value))
+                        }
+                        _ => {
+                            self.runtime_error("Operand must be a number.");
                             return Err(InterpretError::Runtime);
-                        }
-                    }
-                    OpCode::Equal => {
-                        let b = self.stack.pop().unwrap();
-                        let a = self.stack.pop().unwrap();
-                        self.stack.push((a == b).into());
-                    }
-                    OpCode::Greater => self.comparison_op(PartialOrd::gt)?,
-                    OpCode::Less => self.comparison_op(PartialOrd::lt)?,
-                    OpCode::Add => {
-                        let a = self.stack.get(self.stack.len() - 2).unwrap().clone();
-                        let b = self.stack.last().unwrap().clone();
-
-                        match (a, b) {
-                            (Value::String(a), Value::String(b)) => {
-                                self.stack.pop();
-                                self.stack.pop();
-                                let a = a.replace('"', "");
-                                let b = b.replace('"', "");
-                                let result = format!("\"{}\"", a + b.as_str());
-                                self.stack.push(result.into());
-                            }
-                            (Value::Number(a), Value::Number(b)) => {
-                                self.stack.pop();
-                                self.stack.pop();
-                                self.stack.push((a + b).into());
-                            }
-                            _ => {
-                                self.runtime_error("Operands must be two numbers or two strings.");
-                                return Err(InterpretError::Runtime);
-                            }
-                        }
-                    }
-                    OpCode::Subtract => self.binary_op(Sub::sub)?,
-                    OpCode::Multiply => self.binary_op(Mul::mul)?,
-                    OpCode::Divide => self.binary_op(Div::div)?,
-                    OpCode::Not => {
-                        let bool_val = self.stack.pop().unwrap().is_falsey();
-                        self.stack.push(bool_val.into());
-                    }
-                    OpCode::Negate => {
-                        // Inspect the value from the stack without popping it first,
-                        // in case it's not a number.
-                        let value = self.stack.last().unwrap().clone();
-
-                        match value {
-                            Value::Number(value) => {
-                                self.stack.pop();
-                                self.stack.push(Value::Number(-value))
-                            }
-                            _ => {
-                                self.runtime_error("Operand must be a number.");
-                                return Err(InterpretError::Runtime);
-                            }
                         }
                     }
                 }
