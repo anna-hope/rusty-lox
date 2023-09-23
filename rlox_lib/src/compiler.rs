@@ -24,9 +24,6 @@ pub enum CompilerError {
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub enum ParserError {
-    #[error("Compiler error: {0}")]
-    Compiler(#[from] CompilerError),
-
     #[error("CompileError")]
     Error,
 }
@@ -128,7 +125,7 @@ impl Compiler {
 
     fn resolve_local(&self, name: Token) -> CompilerResult<Option<usize>> {
         for (index, local) in self.locals.iter().enumerate().rev() {
-            if local.name == name {
+            if local.name.value == name.value {
                 return if local.initialized {
                     Ok(Some(index))
                 } else {
@@ -169,7 +166,7 @@ impl Parser {
         self.advance();
 
         while !self.match_token(TokenType::Eof) {
-            self.declaration()?;
+            self.declaration();
         }
 
         self.end_compiler();
@@ -270,7 +267,7 @@ impl Parser {
         self.compiler.scope_depth -= 1;
 
         // Pop all the locals at the current scope.
-        while self.compiler.locals.len() > 0
+        while !self.compiler.locals.is_empty()
             && self.compiler.locals.last().unwrap().depth > self.compiler.scope_depth
         {
             self.emit_code(OpCode::Pop);
@@ -331,18 +328,25 @@ impl Parser {
     }
 
     fn named_variable(&mut self, name: Token, can_assign: bool) {
-        let (get_op, set_op) = if let Ok(Some(arg)) = self.compiler.resolve_local(name) {
-            (OpCode::GetLocal(arg), OpCode::SetLocal(arg))
-        } else {
-            let arg = self.identifier_constant(name);
-            (OpCode::GetGlobal(arg), OpCode::SetGlobal(arg))
-        };
+        match self.compiler.resolve_local(name) {
+            Ok(maybe_arg) => {
+                let (get_op, set_op) = if let Some(arg) = maybe_arg {
+                    (OpCode::GetLocal(arg), OpCode::SetLocal(arg))
+                } else {
+                    let arg = self.identifier_constant(name);
+                    (OpCode::GetGlobal(arg), OpCode::SetGlobal(arg))
+                };
 
-        if can_assign && self.match_token(TokenType::Equal) {
-            self.expression();
-            self.emit_code(set_op);
-        } else {
-            self.emit_code(get_op);
+                if can_assign && self.match_token(TokenType::Equal) {
+                    self.expression();
+                    self.emit_code(set_op);
+                } else {
+                    self.emit_code(get_op);
+                }
+            }
+            Err(error) => {
+                self.error_at_previous(error.to_string().as_str());
+            }
         }
     }
 
@@ -419,25 +423,26 @@ impl Parser {
         self.chunk.push_constant(Value::Obj(name.value))
     }
 
-    fn declare_variable(&mut self) -> Result<()> {
+    fn declare_variable(&mut self) {
         if self.compiler.scope_depth == 0 {
-            return Ok(());
+            return;
         }
 
         let name = self.previous.unwrap();
-        self.compiler.add_local(name)?;
-        Ok(())
+        if let Err(error) = self.compiler.add_local(name) {
+            self.error_at_previous(error.to_string().as_str());
+        }
     }
 
-    fn parse_variable(&mut self, error_message: &str) -> Result<usize> {
+    fn parse_variable(&mut self, error_message: &str) -> usize {
         self.consume(TokenType::Identifier, error_message);
 
-        self.declare_variable()?;
+        self.declare_variable();
         if self.compiler.scope_depth > 0 {
-            return Ok(0);
+            return 0;
         }
 
-        Ok(self.identifier_constant(self.previous.unwrap()))
+        self.identifier_constant(self.previous.unwrap())
     }
 
     fn define_variable(&mut self, global_index: usize) {
@@ -453,17 +458,16 @@ impl Parser {
         self.parse_precedence(Precedence::Assignment);
     }
 
-    fn block(&mut self) -> Result<()> {
+    fn block(&mut self) {
         while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof) {
-            self.declaration()?;
+            self.declaration();
         }
 
         self.consume(TokenType::RightBrace, "Expect '}' after block.");
-        Ok(())
     }
 
-    fn var_declaration(&mut self) -> Result<()> {
-        let global = self.parse_variable("Expect variable name.")?;
+    fn var_declaration(&mut self) {
+        let global = self.parse_variable("Expect variable name.");
 
         if self.match_token(TokenType::Equal) {
             self.expression();
@@ -477,7 +481,6 @@ impl Parser {
         );
 
         self.define_variable(global);
-        Ok(())
     }
 
     fn expression_statement(&mut self) {
@@ -520,31 +523,28 @@ impl Parser {
         }
     }
 
-    fn declaration(&mut self) -> Result<()> {
+    fn declaration(&mut self) {
         if self.match_token(TokenType::Var) {
-            self.var_declaration()?;
+            self.var_declaration();
         } else {
-            self.statement()?;
+            self.statement();
         }
 
         if self.panic_mode {
             self.synchronize();
         }
-        Ok(())
     }
 
-    fn statement(&mut self) -> Result<()> {
+    fn statement(&mut self) {
         if self.match_token(TokenType::Print) {
             self.print_statement();
         } else if self.match_token(TokenType::LeftBrace) {
             self.begin_scope();
-            self.block()?;
+            self.block();
             self.end_scope();
         } else {
             self.expression_statement();
         }
-
-        Ok(())
     }
 
     fn emit_return(&mut self) {
