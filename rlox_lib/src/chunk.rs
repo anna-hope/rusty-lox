@@ -24,14 +24,15 @@ pub enum OpCode {
     Divide,
     Not,
     Negate,
-    Return,
     Print,
+    JumpIfFalse(StackSlot, StackSlot),
+    Return,
 }
 
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let debug_repr = format!("{self:?}");
-        let display_repr = format!("OP_{}", debug_repr.to_ascii_uppercase());
+        let display_repr = format!("OP_{}", debug_repr);
         write!(f, "{display_repr}")
     }
 }

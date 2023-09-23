@@ -252,6 +252,11 @@ impl Parser {
         self.emit_code(code2);
     }
 
+    fn emit_jump(&mut self, instruction: OpCode) -> usize {
+        self.emit_code(instruction);
+        self.chunk.codes.len() - 1
+    }
+
     fn end_compiler(&mut self) {
         self.emit_return();
         if env::var("DEBUG_PRINT_CODE") == Ok("1".to_string()) && !self.had_error {
@@ -489,6 +494,17 @@ impl Parser {
         self.emit_code(OpCode::Pop);
     }
 
+    fn if_statement(&mut self) {
+        self.consume(TokenType::LeftParen, "Expect '(' after 'if'.");
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+        let then_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
+        self.statement();
+
+        self.patch_jump(then_jump);
+    }
+
     fn print_statement(&mut self) {
         self.expression();
         self.consume(TokenType::Semicolon, "Expect ';' after value.");
@@ -538,6 +554,8 @@ impl Parser {
     fn statement(&mut self) {
         if self.match_token(TokenType::Print) {
             self.print_statement();
+        } else if self.match_token(TokenType::If) {
+            self.if_statement();
         } else if self.match_token(TokenType::LeftBrace) {
             self.begin_scope();
             self.block();
@@ -554,6 +572,19 @@ impl Parser {
     fn emit_constant(&mut self, value: Value) {
         self.chunk
             .add_constant_code(value, self.previous.unwrap().line);
+    }
+
+    fn patch_jump(&mut self, offset: usize) {
+        let jump = self.chunk.codes.len() - offset;
+        let op = self.chunk.codes.get_mut(offset).unwrap();
+
+        match op {
+            OpCode::JumpIfFalse(ref mut slot0, ref mut slot1) => {
+                *slot0 = jump >> 8 & 0xff;
+                *slot1 = jump & 0xff;
+            }
+            _ => panic!("Expected OpCode::JumpIfFalse"),
+        }
     }
 }
 

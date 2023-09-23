@@ -45,6 +45,9 @@ impl Vm {
         let mut parser = Parser::new(source);
         let chunks = parser.compile()?;
         let mut results = vec![];
+
+        self.ip = 0;
+
         for chunk in chunks.iter() {
             if let Some(value) = self.run(chunk)? {
                 results.push(value);
@@ -71,6 +74,13 @@ impl Vm {
             match code {
                 OpCode::Print => {
                     println!("{}", self.stack.pop().unwrap());
+                }
+                OpCode::JumpIfFalse(slot0, slot1) => {
+                    if self.stack.last().unwrap().is_falsey() {
+                        self.ip = slot0;
+                    } else {
+                        self.ip = slot1;
+                    }
                 }
                 OpCode::Return => return Ok(self.stack.pop()),
                 OpCode::Constant(index) => {
