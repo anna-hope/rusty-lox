@@ -575,7 +575,7 @@ impl Parser {
     }
 
     fn patch_jump(&mut self, offset: usize) {
-        let jump = self.chunk.codes.len() - offset;
+        let jump = self.chunk.codes.len() - offset - 1;
         let op = self.chunk.codes.get_mut(offset).unwrap();
 
         match op {

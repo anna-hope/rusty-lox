@@ -64,7 +64,7 @@ impl Vm {
             if env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into()) {
                 print!("          ");
                 for slot in self.stack.iter() {
-                    println!("[ {slot:?} ]")
+                    println!("[ {slot:?} ]");
                 }
                 chunk.disassemble_instruction(self.ip);
             }
