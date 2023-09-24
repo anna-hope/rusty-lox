@@ -78,6 +78,7 @@ impl From<TokenType> for Precedence {
             | TokenType::Less
             | TokenType::LessEqual => Precedence::Comparison,
             TokenType::And => Precedence::And,
+            TokenType::Or => Precedence::Or,
             _ => Precedence::Lowest,
         }
     }
@@ -328,6 +329,17 @@ impl Parser {
         self.emit_constant(value.into());
     }
 
+    fn or(&mut self) {
+        let else_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
+        let end_jump = self.emit_jump(OpCode::Jump(0xff, 0xff));
+
+        self.patch_jump(else_jump);
+        self.emit_code(OpCode::Pop);
+
+        self.parse_precedence(Precedence::Or);
+        self.patch_jump(end_jump);
+    }
+
     fn string(&mut self, _can_assign: bool) {
         let string = self.previous.unwrap().value;
         self.emit_constant(string.into());
@@ -396,6 +408,7 @@ impl Parser {
             TokenType::Greater | TokenType::GreaterEqual => Some(Self::binary),
             TokenType::Less | TokenType::LessEqual => Some(Self::binary),
             TokenType::And => Some(Self::and),
+            TokenType::Or => Some(Self::or),
             _ => None,
         }
     }
