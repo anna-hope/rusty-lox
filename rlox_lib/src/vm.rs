@@ -75,11 +75,14 @@ impl Vm {
                 OpCode::Print => {
                     println!("{}", self.stack.pop().unwrap());
                 }
-                OpCode::JumpIfFalse(slot0, slot1) => {
+                OpCode::Jump(offset1, offset2) => {
+                    let offset = offset1 << 8 | offset2;
+                    self.ip += offset;
+                }
+                OpCode::JumpIfFalse(offset1, offset2) => {
+                    let offset = offset1 << 8 | offset2;
                     if self.stack.last().unwrap().is_falsey() {
-                        self.ip = slot0;
-                    } else {
-                        self.ip = slot1;
+                        self.ip += offset;
                     }
                 }
                 OpCode::Return => return Ok(self.stack.pop()),

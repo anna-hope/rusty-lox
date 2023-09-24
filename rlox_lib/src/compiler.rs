@@ -500,9 +500,19 @@ impl Parser {
         self.consume(TokenType::RightParen, "Expect ')' after condition.");
 
         let then_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
+        self.emit_code(OpCode::Pop);
         self.statement();
 
+        let else_jump = self.emit_jump(OpCode::Jump(0xff, 0xff));
+
         self.patch_jump(then_jump);
+        self.emit_code(OpCode::Pop);
+
+        if self.match_token(TokenType::Else) {
+            self.statement();
+        }
+
+        self.patch_jump(else_jump);
     }
 
     fn print_statement(&mut self) {
@@ -579,11 +589,12 @@ impl Parser {
         let op = self.chunk.codes.get_mut(offset).unwrap();
 
         match op {
-            OpCode::JumpIfFalse(ref mut slot0, ref mut slot1) => {
-                *slot0 = jump >> 8 & 0xff;
-                *slot1 = jump & 0xff;
+            OpCode::JumpIfFalse(ref mut offset1, ref mut offset2)
+            | OpCode::Jump(ref mut offset1, ref mut offset2) => {
+                *offset1 = jump >> 8 & 0xff;
+                *offset2 = jump & 0xff;
             }
-            _ => panic!("Expected OpCode::JumpIfFalse"),
+            _ => panic!("Expected Jump or JumpIfFalse, got {op:?}"),
         }
     }
 }

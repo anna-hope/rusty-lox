@@ -25,7 +25,8 @@ pub enum OpCode {
     Not,
     Negate,
     Print,
-    JumpIfFalse(StackSlot, StackSlot),
+    Jump(usize, usize),
+    JumpIfFalse(usize, usize),
     Return,
 }
 
@@ -98,6 +99,12 @@ impl Chunk {
             OpCode::GetLocal(index) | OpCode::SetLocal(index) => {
                 println!("{instruction:-16} {index:4}");
                 offset + 2
+            }
+            OpCode::Jump(offset1, offset2) | OpCode::JumpIfFalse(offset1, offset2) => {
+                let sign = 1;
+                let jump = offset1 << 8 | offset2;
+                println!("{instruction:-16} {offset:4} -> {}", offset + sign * jump);
+                offset + 3
             }
             _ => {
                 println!("{instruction}");
