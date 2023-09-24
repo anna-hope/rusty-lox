@@ -77,6 +77,7 @@ impl From<TokenType> for Precedence {
             | TokenType::GreaterEqual
             | TokenType::Less
             | TokenType::LessEqual => Precedence::Comparison,
+            TokenType::And => Precedence::And,
             _ => Precedence::Lowest,
         }
     }
@@ -394,6 +395,7 @@ impl Parser {
             TokenType::EqualEqual => Some(Self::binary),
             TokenType::Greater | TokenType::GreaterEqual => Some(Self::binary),
             TokenType::Less | TokenType::LessEqual => Some(Self::binary),
+            TokenType::And => Some(Self::and),
             _ => None,
         }
     }
@@ -457,6 +459,15 @@ impl Parser {
         }
 
         self.emit_code(OpCode::DefineGlobal(global_index));
+    }
+
+    fn and(&mut self) {
+        let end_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
+
+        self.emit_code(OpCode::Pop);
+        self.parse_precedence(Precedence::And);
+
+        self.patch_jump(end_jump);
     }
 
     fn expression(&mut self) {
