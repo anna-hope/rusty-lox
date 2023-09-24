@@ -27,6 +27,7 @@ pub enum OpCode {
     Print,
     Jump(usize, usize),
     JumpIfFalse(usize, usize),
+    Loop(usize, usize),
     Return,
 }
 
@@ -101,9 +102,13 @@ impl Chunk {
                 offset + 2
             }
             OpCode::Jump(offset1, offset2) | OpCode::JumpIfFalse(offset1, offset2) => {
-                let sign = 1;
                 let jump = offset1 << 8 | offset2;
-                println!("{instruction:-16} {offset:4} -> {}", offset + sign * jump);
+                println!("{instruction:-16} {offset:4} -> {}", offset + jump);
+                offset + 3
+            }
+            OpCode::Loop(offset1, offset2) => {
+                let jump = offset1 << 8 | offset2;
+                println!("{instruction:-16} {offset:4} -> {}", offset - jump);
                 offset + 3
             }
             _ => {

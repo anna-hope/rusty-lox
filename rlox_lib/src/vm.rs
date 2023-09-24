@@ -76,14 +76,18 @@ impl Vm {
                     println!("{}", self.stack.pop().unwrap());
                 }
                 OpCode::Jump(offset1, offset2) => {
-                    let offset = offset1 << 8 | offset2;
+                    let offset = calculate_offset(offset1, offset2);
                     self.ip += offset;
                 }
                 OpCode::JumpIfFalse(offset1, offset2) => {
-                    let offset = offset1 << 8 | offset2;
+                    let offset = calculate_offset(offset1, offset2);
                     if self.stack.last().unwrap().is_falsey() {
                         self.ip += offset;
                     }
+                }
+                OpCode::Loop(offset1, offset2) => {
+                    let offset = calculate_offset(offset1, offset2);
+                    self.ip -= offset;
                 }
                 OpCode::Return => return Ok(self.stack.pop()),
                 OpCode::Constant(index) => {
@@ -237,6 +241,11 @@ impl Vm {
         }
         Ok(())
     }
+}
+
+#[inline]
+fn calculate_offset(offset1: usize, offset2: usize) -> usize {
+    offset1 << 8 | offset2
 }
 
 #[cfg(test)]

@@ -254,6 +254,14 @@ impl Parser {
         self.emit_code(code2);
     }
 
+    fn emit_loop(&mut self, loop_start: usize) {
+        // HACK: Subtracting one from the offset because something funky is going on
+        // with instruction pointers on the VM inside.
+        // Ideally, it would be fixed there, but I haven't been able to figure it out.
+        let offset = self.chunk.codes.len() - loop_start + 2 - 1;
+        self.emit_code(OpCode::Loop(offset >> 8 & 0xff, offset & 0xff));
+    }
+
     fn emit_jump(&mut self, instruction: OpCode) -> usize {
         self.emit_code(instruction);
         self.chunk.codes.len() - 1
@@ -545,6 +553,21 @@ impl Parser {
         self.emit_code(OpCode::Print);
     }
 
+    fn while_statement(&mut self) {
+        let loop_start = self.chunk.codes.len();
+        self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+        let exit_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
+        self.emit_code(OpCode::Pop);
+        self.statement();
+        self.emit_loop(loop_start);
+
+        self.patch_jump(exit_jump);
+        self.emit_code(OpCode::Pop);
+    }
+
     fn synchronize(&mut self) {
         self.panic_mode = false;
 
@@ -590,6 +613,8 @@ impl Parser {
             self.print_statement();
         } else if self.match_token(TokenType::If) {
             self.if_statement();
+        } else if self.match_token(TokenType::While) {
+            self.while_statement();
         } else if self.match_token(TokenType::LeftBrace) {
             self.begin_scope();
             self.block();
@@ -609,6 +634,7 @@ impl Parser {
     }
 
     fn patch_jump(&mut self, offset: usize) {
+        // HACK: Ditto about subtracting 1 from the offset.
         let jump = self.chunk.codes.len() - offset - 1;
         let op = self.chunk.codes.get_mut(offset).unwrap();
 
