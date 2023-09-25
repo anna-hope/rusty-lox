@@ -35,7 +35,20 @@ pub enum OpCode {
 impl Display for OpCode {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let debug_repr = format!("{self:?}");
-        let display_repr = format!("OP_{}", debug_repr);
+        let variant_repr = debug_repr.split('(').next().unwrap();
+
+        let mut op_repr = String::new();
+        let mut iter = variant_repr.chars().peekable();
+        while let Some(c) = iter.next() {
+            op_repr.push(c.to_ascii_uppercase());
+            if let Some(next_c) = iter.peek() {
+                if next_c.is_ascii_uppercase() {
+                    op_repr.push('_');
+                }
+            }
+        }
+
+        let display_repr = format!("OP_{}", op_repr);
         write!(f, "{display_repr}")
     }
 }
