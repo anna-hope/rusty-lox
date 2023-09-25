@@ -1,6 +1,7 @@
 use crate::value::Value;
 use std::fmt::{Display, Formatter};
 
+type JumpOffset = usize;
 type StackSlot = usize;
 
 #[derive(Debug, Copy, Clone)]
@@ -25,9 +26,9 @@ pub enum OpCode {
     Not,
     Negate,
     Print,
-    Jump(usize, usize),
-    JumpIfFalse(usize, usize),
-    Loop(usize, usize),
+    Jump(JumpOffset),
+    JumpIfFalse(JumpOffset),
+    Loop(JumpOffset),
     Return,
 }
 
@@ -101,14 +102,12 @@ impl Chunk {
                 println!("{instruction:-16} {index:4}");
                 offset + 2
             }
-            OpCode::Jump(offset1, offset2) | OpCode::JumpIfFalse(offset1, offset2) => {
-                let jump = offset1 << 8 | offset2;
-                println!("{instruction:-16} {offset:4} -> {}", offset + jump);
+            OpCode::Jump(jump_offset) | OpCode::JumpIfFalse(jump_offset) => {
+                println!("{instruction:-16} {offset:4} -> {}", offset + jump_offset);
                 offset + 3
             }
-            OpCode::Loop(offset1, offset2) => {
-                let jump = offset1 << 8 | offset2;
-                println!("{instruction:-16} {offset:4} -> {}", offset - jump);
+            OpCode::Loop(jump_offset) => {
+                println!("{instruction:-16} {offset:4} -> {}", offset - jump_offset);
                 offset + 3
             }
             _ => {

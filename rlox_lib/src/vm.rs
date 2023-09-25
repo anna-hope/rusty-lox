@@ -37,7 +37,7 @@ pub struct Vm {
 impl Vm {
     pub fn new() -> Self {
         Self {
-            stack: ArrayVec::<[Value; STACK_MAX]>::new(),
+            stack: ArrayVec::new(),
             line: 0,
             globals: FnvHashMap::default(),
             ip: 0,
@@ -78,18 +78,15 @@ impl Vm {
                 OpCode::Print => {
                     println!("{}", self.stack.pop().unwrap());
                 }
-                OpCode::Jump(offset1, offset2) => {
-                    let offset = calculate_offset(offset1, offset2);
+                OpCode::Jump(offset) => {
                     self.ip += offset;
                 }
-                OpCode::JumpIfFalse(offset1, offset2) => {
-                    let offset = calculate_offset(offset1, offset2);
+                OpCode::JumpIfFalse(offset) => {
                     if self.stack.last().unwrap().is_falsey() {
                         self.ip += offset;
                     }
                 }
-                OpCode::Loop(offset1, offset2) => {
-                    let offset = calculate_offset(offset1, offset2);
+                OpCode::Loop(offset) => {
                     self.ip -= offset;
                 }
                 OpCode::Return => return Ok(self.stack.pop()),
@@ -244,11 +241,6 @@ impl Vm {
         }
         Ok(())
     }
-}
-
-#[inline]
-fn calculate_offset(offset1: usize, offset2: usize) -> usize {
-    offset1 << 8 | offset2
 }
 
 #[cfg(test)]

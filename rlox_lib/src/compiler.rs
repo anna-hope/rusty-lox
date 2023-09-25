@@ -256,10 +256,11 @@ impl Parser {
 
     fn emit_loop(&mut self, loop_start: usize) {
         // HACK: Subtracting one from the offset because something funky is going on
-        // with instruction pointers on the VM inside.
+        // with instruction pointers on the VM side.
         // Ideally, it would be fixed there, but I haven't been able to figure it out.
         let offset = self.chunk.codes.len() - loop_start + 2 - 1;
-        self.emit_code(OpCode::Loop(offset >> 8 & 0xff, offset & 0xff));
+        let jump_offset = calculate_jump_offset(offset >> 8 & 0xff, offset & 0xff);
+        self.emit_code(OpCode::Loop(jump_offset));
     }
 
     fn emit_jump(&mut self, instruction: OpCode) -> usize {
@@ -338,8 +339,8 @@ impl Parser {
     }
 
     fn or(&mut self) {
-        let else_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
-        let end_jump = self.emit_jump(OpCode::Jump(0xff, 0xff));
+        let else_jump = self.emit_jump(OpCode::JumpIfFalse(0xff));
+        let end_jump = self.emit_jump(OpCode::Jump(0xff));
 
         self.patch_jump(else_jump);
         self.emit_code(OpCode::Pop);
@@ -483,7 +484,7 @@ impl Parser {
     }
 
     fn and(&mut self) {
-        let end_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
+        let end_jump = self.emit_jump(OpCode::JumpIfFalse(0xff));
 
         self.emit_code(OpCode::Pop);
         self.parse_precedence(Precedence::And);
@@ -531,11 +532,11 @@ impl Parser {
         self.expression();
         self.consume(TokenType::RightParen, "Expect ')' after condition.");
 
-        let then_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
+        let then_jump = self.emit_jump(OpCode::JumpIfFalse(0xff));
         self.emit_code(OpCode::Pop);
         self.statement();
 
-        let else_jump = self.emit_jump(OpCode::Jump(0xff, 0xff));
+        let else_jump = self.emit_jump(OpCode::Jump(0xff));
 
         self.patch_jump(then_jump);
         self.emit_code(OpCode::Pop);
@@ -559,7 +560,7 @@ impl Parser {
         self.expression();
         self.consume(TokenType::RightParen, "Expect ')' after condition.");
 
-        let exit_jump = self.emit_jump(OpCode::JumpIfFalse(0xff, 0xff));
+        let exit_jump = self.emit_jump(OpCode::JumpIfFalse(0xff));
         self.emit_code(OpCode::Pop);
         self.statement();
         self.emit_loop(loop_start);
@@ -639,14 +640,19 @@ impl Parser {
         let op = self.chunk.codes.get_mut(offset).unwrap();
 
         match op {
-            OpCode::JumpIfFalse(ref mut offset1, ref mut offset2)
-            | OpCode::Jump(ref mut offset1, ref mut offset2) => {
-                *offset1 = jump >> 8 & 0xff;
-                *offset2 = jump & 0xff;
+            OpCode::JumpIfFalse(ref mut offset) | OpCode::Jump(ref mut offset) => {
+                *offset = calculate_jump_offset(jump >> 8 & 0xff, jump & 0xff);
             }
             _ => panic!("Expected Jump or JumpIfFalse, got {op:?}"),
         }
     }
+}
+
+#[inline]
+fn calculate_jump_offset(offset1: usize, offset2: usize) -> usize {
+    // Combining two 8-bit offsets from the book into one offset here for better VM ergonomics.
+    // We don't have to store them as two separate u8's because we use usize.
+    offset1 << 8 | offset2
 }
 
 #[cfg(test)]
