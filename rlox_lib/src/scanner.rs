@@ -164,29 +164,27 @@ impl Scanner {
     }
 
     fn skip_whitespace(&mut self) {
-        loop {
-            if let Some(c) = self.peek() {
-                if c.is_ascii_whitespace() {
-                    self.previous_index += 1;
-                    self.current_index += 1;
-                    if c == '\n' {
-                        self.current_line += 1;
-                    }
-                } else if c == '/' {
-                    if let Some(next_char) = self.peek_next() {
-                        if next_char == '/' {
-                            while let Some(this_char) = self.peek() {
-                                if this_char != '\n' {
-                                    self.previous_index += 1;
-                                    self.current_index += 1;
-                                }
+        while let Some(c) = self.peek() {
+            if c.is_ascii_whitespace() {
+                self.previous_index += 1;
+                self.current_index += 1;
+                if c == '\n' {
+                    self.current_line += 1;
+                }
+            } else if c == '/' {
+                if let Some(next_char) = self.peek_next() {
+                    if next_char == '/' {
+                        while let Some(this_char) = self.peek() {
+                            if this_char == '\n' {
+                                break;
+                            } else {
+                                self.previous_index += 1;
+                                self.current_index += 1;
                             }
-                        } else {
-                            return;
                         }
+                    } else {
+                        return;
                     }
-                } else {
-                    return;
                 }
             } else {
                 return;
