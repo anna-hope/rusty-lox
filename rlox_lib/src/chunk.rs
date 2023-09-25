@@ -56,6 +56,10 @@ impl Chunk {
         }
     }
 
+    pub fn len(&self) -> usize {
+        self.codes.len()
+    }
+
     pub fn add_code(&mut self, code: OpCode, line: usize) {
         self.codes.push(code);
         self.lines.push(line);
@@ -96,25 +100,28 @@ impl Chunk {
             | OpCode::SetGlobal(index) => {
                 let value = &self.constants[index];
                 println!("{instruction:-16} {index:4} '{value:?}'");
-                offset + 1
             }
             OpCode::GetLocal(index) | OpCode::SetLocal(index) => {
                 println!("{instruction:-16} {index:4}");
-                offset + 2
             }
             OpCode::Jump(jump_offset) | OpCode::JumpIfFalse(jump_offset) => {
-                println!("{instruction:-16} {offset:4} -> {}", offset + jump_offset);
-                offset + 3
+                println!(
+                    "{instruction:-16} {offset:4} -> {}",
+                    offset + 1 + jump_offset
+                );
             }
             OpCode::Loop(jump_offset) => {
-                println!("{instruction:-16} {offset:4} -> {}", offset - jump_offset);
-                offset + 3
+                println!(
+                    "{instruction:-16} {offset:4} -> {}",
+                    offset + 1 - jump_offset
+                );
             }
             _ => {
                 println!("{instruction}");
-                offset + 1
             }
         }
+
+        offset + 1
     }
 
     pub fn disassemble(&self, name: &str) {
