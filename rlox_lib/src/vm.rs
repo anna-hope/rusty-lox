@@ -4,6 +4,7 @@ use std::{env, fmt};
 
 use fnv::FnvHashMap;
 use thiserror::Error;
+use tinyvec::ArrayVec;
 use ustr::Ustr;
 
 use crate::{
@@ -11,6 +12,8 @@ use crate::{
     compiler::{Parser, ParserError},
     value::Value,
 };
+
+const STACK_MAX: usize = 256;
 
 pub type Result<T> = std::result::Result<T, InterpretError>;
 
@@ -23,9 +26,9 @@ pub enum InterpretError {
     Runtime,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Vm {
-    stack: Vec<Value>,
+    stack: ArrayVec<[Value; STACK_MAX]>,
     line: usize,
     globals: FnvHashMap<Ustr, Value>,
     ip: usize,
@@ -34,7 +37,7 @@ pub struct Vm {
 impl Vm {
     pub fn new() -> Self {
         Self {
-            stack: Vec::with_capacity(u8::MAX.into()),
+            stack: ArrayVec::<[Value; STACK_MAX]>::new(),
             line: 0,
             globals: FnvHashMap::default(),
             ip: 0,
