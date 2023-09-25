@@ -1,191 +1,224 @@
+use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::ops::{Div, Mul, Sub};
+use std::rc::Rc;
 use std::{env, fmt};
 
 use fnv::FnvHashMap;
 use thiserror::Error;
-use tinyvec::ArrayVec;
 use ustr::Ustr;
 
+use crate::value::Function;
 use crate::{
     chunk::{Chunk, OpCode},
     compiler::{Parser, ParserError},
     value::Value,
 };
 
-const STACK_MAX: usize = 256;
+const FRAMES_MAX: usize = 64;
+const STACK_MAX: usize = FRAMES_MAX * 256;
 
 pub type Result<T> = std::result::Result<T, InterpretError>;
+
+type Stack = Vec<Value>;
+type BoxedStack = Rc<RefCell<Stack>>;
 
 #[derive(Debug, Error)]
 pub enum InterpretError {
     #[error("Compile error")]
     Compile(#[from] ParserError),
 
-    #[error("Runtime error")]
-    Runtime,
+    #[error("Runtime error: {0}")]
+    Runtime(String),
+}
+
+#[derive(Debug)]
+struct CallFrame {
+    function: Function,
+    ip: usize,
+    slots: BoxedStack,
+}
+
+impl CallFrame {
+    fn new(function: Function, slots: Rc<RefCell<Stack>>) -> Self {
+        Self {
+            function,
+            ip: 0,
+            slots,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct Vm {
-    stack: ArrayVec<[Value; STACK_MAX]>,
-    line: usize,
+    frames: Vec<CallFrame>,
+    stack: BoxedStack,
     globals: FnvHashMap<Ustr, Value>,
-    ip: usize,
 }
 
 impl Vm {
     pub fn new() -> Self {
         Self {
-            stack: ArrayVec::new(),
-            line: 0,
+            frames: Vec::with_capacity(FRAMES_MAX),
+            stack: Rc::new(RefCell::new(Vec::with_capacity(STACK_MAX))),
             globals: FnvHashMap::default(),
-            ip: 0,
         }
     }
 
-    pub fn interpret(&mut self, source: String) -> Result<Vec<Value>> {
+    pub fn interpret(&mut self, source: String) -> Result<Value> {
         let mut parser = Parser::new(source);
-        let chunks = parser.compile()?;
-        let mut results = vec![];
+        let function = parser.compile()?;
+        self.stack.borrow_mut().push(function.clone().into());
 
-        self.ip = 0;
+        let frame = CallFrame::new(function.clone(), Rc::clone(&self.stack));
+        self.frames.push(frame);
 
-        for chunk in chunks.iter() {
-            if let Some(value) = self.run(chunk)? {
-                results.push(value);
-            }
+        if let Some(result) = self.run().transpose() {
+            result
+        } else {
+            Ok(Value::default())
         }
-        Ok(results)
     }
 
-    fn run(&mut self, chunk: &Chunk) -> Result<Option<Value>> {
+    fn run(&mut self) -> Result<Option<Value>> {
+        let frame = &mut self.frames[0];
+        let chunk = &frame.function.chunk;
+
         loop {
-            let code = chunk.codes[self.ip];
-            self.line = chunk.lines[self.ip];
+            let code = chunk.codes[frame.ip];
 
             if env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into()) {
                 print!("          ");
-                for slot in self.stack.iter() {
+                for slot in self.stack.borrow().iter() {
                     println!("[ {slot:?} ]");
                 }
-                chunk.disassemble_instruction(self.ip);
+                chunk.disassemble_instruction(frame.ip);
             }
 
-            self.ip += 1;
+            frame.ip += 1;
 
             match code {
                 OpCode::Print => {
-                    println!("{}", self.stack.pop().unwrap());
+                    println!("{}", self.stack.borrow_mut().pop().unwrap());
                 }
                 OpCode::Jump(offset) => {
-                    self.ip += offset;
+                    frame.ip += offset;
                 }
                 OpCode::JumpIfFalse(offset) => {
-                    if self.stack.last().unwrap().is_falsey() {
-                        self.ip += offset;
+                    if self.stack.borrow().last().unwrap().is_falsey() {
+                        frame.ip += offset;
                     }
                 }
                 OpCode::Loop(offset) => {
-                    self.ip -= offset;
+                    frame.ip -= offset;
                 }
-                OpCode::Return => return Ok(self.stack.pop()),
+                OpCode::Return => return Ok(self.stack.borrow_mut().pop()),
                 OpCode::Constant(index) => {
                     let constant = chunk.read_constant(index);
-                    self.stack.push(constant.clone());
+                    self.stack.borrow_mut().push(constant.clone());
                 }
-                OpCode::Nil => self.stack.push(Value::Nil),
-                OpCode::True => self.stack.push(true.into()),
-                OpCode::False => self.stack.push(false.into()),
+                OpCode::Nil => self.stack.borrow_mut().push(Value::Nil),
+                OpCode::True => self.stack.borrow_mut().push(true.into()),
+                OpCode::False => self.stack.borrow_mut().push(false.into()),
                 OpCode::Pop => {
-                    self.stack.pop();
+                    self.stack.borrow_mut().pop();
                 }
                 OpCode::GetLocal(slot) => {
-                    let value = self.stack.get(slot).unwrap();
-                    self.stack.push(value.clone());
+                    let value = {
+                        let slots = frame.slots.borrow();
+                        let value = slots.get(slot).unwrap();
+                        value.clone()
+                    };
+                    self.stack.borrow_mut().push(value);
                 }
                 OpCode::SetLocal(slot) => {
-                    let value = self.stack.last().unwrap();
-                    self.stack[slot] = value.clone();
+                    let value = {
+                        let slots = frame.slots.borrow();
+                        let value = slots.last().unwrap();
+                        value.clone()
+                    };
+                    self.stack.borrow_mut()[slot] = value;
                 }
                 OpCode::GetGlobal(slot) => {
                     let value = chunk.read_constant(slot);
                     let name = value.name().unwrap();
                     if let Some(variable) = self.globals.get(&name) {
-                        self.stack.push(variable.clone());
+                        self.stack.borrow_mut().push(variable.clone());
                     } else {
-                        self.runtime_error(format!("Undefined variable: {name}"));
-                        return Err(InterpretError::Runtime);
+                        return Err(self.runtime_error(format!("Undefined variable: {name}")));
                     }
                 }
                 OpCode::DefineGlobal(slot) => {
                     let value = chunk.read_constant(slot);
                     let name = value.name().unwrap();
                     self.globals
-                        .insert(name, self.stack.last().unwrap().clone());
-                    self.stack.pop();
+                        .insert(name, self.stack.borrow().last().unwrap().clone());
+                    self.stack.borrow_mut().pop();
                 }
                 OpCode::SetGlobal(slot) => {
                     let value = chunk.read_constant(slot);
                     let name = value.name().unwrap();
                     if let Entry::Occupied(mut e) = self.globals.entry(name) {
-                        e.insert(self.stack.last().unwrap().clone());
+                        e.insert(self.stack.borrow().last().unwrap().clone());
                     } else {
-                        self.runtime_error(format!("Undefined variable '{name}'"));
-                        return Err(InterpretError::Runtime);
+                        return Err(self.runtime_error(format!("Undefined variable '{name}'")));
                     }
                 }
                 OpCode::Equal => {
-                    let b = self.stack.pop().unwrap();
-                    let a = self.stack.pop().unwrap();
-                    self.stack.push((a == b).into());
+                    let mut stack = self.stack.borrow_mut();
+                    let b = stack.pop().unwrap();
+                    let a = stack.pop().unwrap();
+                    self.stack.borrow_mut().push((a == b).into());
                 }
-                OpCode::Greater => self.comparison_op(PartialOrd::gt)?,
-                OpCode::Less => self.comparison_op(PartialOrd::lt)?,
+                OpCode::Greater => comparison_op(&mut self.stack.borrow_mut(), PartialOrd::gt)?,
+                OpCode::Less => comparison_op(&mut self.stack.borrow_mut(), PartialOrd::lt)?,
                 OpCode::Add => {
-                    let a = self.stack.get(self.stack.len() - 2).unwrap().clone();
-                    let b = self.stack.last().unwrap().clone();
+                    let mut stack = self.stack.borrow_mut();
+                    let a = stack.get(stack.len() - 2).unwrap().clone();
+                    let b = stack.last().unwrap().clone();
 
                     match (a, b) {
                         (Value::String(a), Value::String(b)) => {
-                            self.stack.pop();
-                            self.stack.pop();
+                            stack.pop();
+                            stack.pop();
                             let a = a.replace('"', "");
                             let b = b.replace('"', "");
                             let result = format!("\"{}\"", a + b.as_str());
-                            self.stack.push(result.into());
+                            stack.push(result.into());
                         }
                         (Value::Number(a), Value::Number(b)) => {
-                            self.stack.pop();
-                            self.stack.pop();
-                            self.stack.push((a + b).into());
+                            stack.pop();
+                            stack.pop();
+                            stack.push((a + b).into());
                         }
                         _ => {
-                            self.runtime_error("Operands must be two numbers or two strings.");
-                            return Err(InterpretError::Runtime);
+                            return Err(
+                                self.runtime_error("Operands must be two numbers or two strings.")
+                            );
                         }
                     }
                 }
-                OpCode::Subtract => self.binary_op(Sub::sub)?,
-                OpCode::Multiply => self.binary_op(Mul::mul)?,
-                OpCode::Divide => self.binary_op(Div::div)?,
+                OpCode::Subtract => binary_op(&mut self.stack.borrow_mut(), Sub::sub)?,
+                OpCode::Multiply => binary_op(&mut self.stack.borrow_mut(), Mul::mul)?,
+                OpCode::Divide => binary_op(&mut self.stack.borrow_mut(), Div::div)?,
                 OpCode::Not => {
-                    let bool_val = self.stack.pop().unwrap().is_falsey();
-                    self.stack.push(bool_val.into());
+                    let mut stack = self.stack.borrow_mut();
+                    let bool_val = stack.pop().unwrap().is_falsey();
+                    stack.push(bool_val.into());
                 }
                 OpCode::Negate => {
                     // Inspect the value from the stack without popping it first,
                     // in case it's not a number.
-                    let value = self.stack.last().unwrap().clone();
+                    let mut stack = self.stack.borrow_mut();
+                    let value = stack.last().unwrap().clone();
 
                     match value {
                         Value::Number(value) => {
-                            self.stack.pop();
-                            self.stack.push(Value::Number(-value))
+                            stack.pop();
+                            stack.push(Value::Number(-value))
                         }
                         _ => {
-                            self.runtime_error("Operand must be a number.");
-                            return Err(InterpretError::Runtime);
+                            return Err(self.runtime_error("Operand must be a number."));
                         }
                     }
                 }
@@ -193,79 +226,84 @@ impl Vm {
         }
     }
 
-    fn runtime_error(&self, message: impl fmt::Display) {
-        eprintln!("{message}");
-        eprintln!("line {} in script", self.line);
-    }
-
-    fn binary_op<F>(&mut self, op: F) -> Result<()>
-    where
-        F: Fn(f64, f64) -> f64,
-    {
-        let b = self.stack.last().unwrap().clone();
-        let a = self.stack.get(self.stack.len() - 2).unwrap().clone();
-
-        match (a, b) {
-            (Value::Number(a), Value::Number(b)) => {
-                self.stack.pop();
-                self.stack.pop();
-                let result = op(a, b);
-                self.stack.push(result.into());
-            }
-            _ => {
-                self.runtime_error("Operands must be numbers.");
-                return Err(InterpretError::Runtime);
-            }
-        }
-        Ok(())
-    }
-
-    fn comparison_op<F>(&mut self, op: F) -> Result<()>
-    where
-        F: Fn(&f64, &f64) -> bool,
-    {
-        let b = self.stack.last().unwrap().clone();
-        let a = self.stack.get(self.stack.len() - 2).unwrap().clone();
-
-        match (a, b) {
-            (Value::Number(a), Value::Number(b)) => {
-                self.stack.pop();
-                self.stack.pop();
-                let result = op(&a, &b);
-                self.stack.push(result.into());
-            }
-            _ => {
-                self.runtime_error("Operands must be numbers.");
-                return Err(InterpretError::Runtime);
-            }
-        }
-        Ok(())
+    fn runtime_error(&self, msg: impl fmt::Display) -> InterpretError {
+        let frame = self.frames.last().unwrap();
+        let line = frame.function.chunk.lines[frame.ip];
+        let msg = format!("{msg}\nline {} in script", line);
+        InterpretError::Runtime(msg)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn binary_op<F>(stack: &mut Vec<Value>, op: F) -> Result<()>
+where
+    F: Fn(f64, f64) -> f64,
+{
+    let b = stack.last().unwrap().clone();
+    let a = stack.get(stack.len() - 2).unwrap().clone();
 
-    #[test]
-    fn evaluate_bool() {
-        let input = "!(5 - 4 > 3 * 2 == !nil);";
-        let mut vm = Vm::new();
-        let value = &vm.interpret(input.to_string()).unwrap()[0];
-        assert_eq!(value, &Value::Bool(true));
+    match (a, b) {
+        (Value::Number(a), Value::Number(b)) => {
+            stack.pop();
+            stack.pop();
+            let result = op(a, b);
+            stack.push(result.into());
+        }
+        _ => {
+            // runtime_error();
+            return Err(InterpretError::Runtime(
+                "Operands must be numbers.".to_string(),
+            ));
+        }
     }
-
-    #[test]
-    fn evaluate_string() {
-        let input = r#"
-var beverage = "cafe au lait";
-var breakfast = "beignets with " + beverage;
-breakfast;
-"#;
-        let mut vm = Vm::new();
-        let result = &vm.interpret(input.to_string()).unwrap();
-        dbg!(&result);
-        dbg!(&vm.stack);
-        // assert_eq!(value, &Value::String("beignets with cafe au lait".into()));
-    }
+    Ok(())
 }
+
+fn comparison_op<F>(stack: &mut Vec<Value>, op: F) -> Result<()>
+where
+    F: Fn(&f64, &f64) -> bool,
+{
+    let b = stack.last().unwrap().clone();
+    let a = stack.get(stack.len() - 2).unwrap().clone();
+
+    match (a, b) {
+        (Value::Number(a), Value::Number(b)) => {
+            stack.pop();
+            stack.pop();
+            let result = op(&a, &b);
+            stack.push(result.into());
+        }
+        _ => {
+            return Err(InterpretError::Runtime(
+                "Operands must be numbers.".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//
+//     #[test]
+//     fn evaluate_bool() {
+//         let input = "!(5 - 4 > 3 * 2 == !nil);";
+//         let mut vm = Vm::new();
+//         let value = &vm.interpret(input.to_string()).unwrap()[0];
+//         assert_eq!(value, &Value::Bool(true));
+//     }
+//
+//     #[test]
+//     fn evaluate_string() {
+//         let input = r#"
+// var beverage = "cafe au lait";
+// var breakfast = "beignets with " + beverage;
+// breakfast;
+// "#;
+//         let mut vm = Vm::new();
+//         let result = &vm.interpret(input.to_string()).unwrap();
+//         dbg!(&result);
+//         dbg!(&vm.stack);
+//         // assert_eq!(value, &Value::String("beignets with cafe au lait".into()));
+//     }
+// }

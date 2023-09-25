@@ -2,6 +2,60 @@ use std::fmt;
 
 use ustr::Ustr;
 
+use crate::chunk::Chunk;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Obj {
+    pub name: Option<Ustr>,
+}
+
+impl Obj {
+    pub fn new(name: Ustr) -> Self {
+        Self { name: Some(name) }
+    }
+}
+
+impl fmt::Display for Obj {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = if let Some(name) = self.name {
+            name
+        } else {
+            "UNNAMED".into()
+        };
+        write!(f, "{name}")
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Function {
+    pub obj: Obj,
+    pub arity: usize,
+    pub chunk: Chunk,
+    pub name: Option<Ustr>,
+}
+
+impl Function {
+    pub fn new() -> Self {
+        Self {
+            obj: Obj::default(),
+            arity: 0,
+            name: None,
+            chunk: Chunk::new(),
+        }
+    }
+}
+
+impl fmt::Display for Function {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let string = if let Some(name) = self.name {
+            name.to_string()
+        } else {
+            "<script>".to_string()
+        };
+        write!(f, "{string}")
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub enum Value {
     Bool(bool),
@@ -9,7 +63,8 @@ pub enum Value {
     Nil,
     Number(f64),
     String(Ustr),
-    Obj(Ustr),
+    Obj(Obj),
+    Function(Function),
 }
 
 impl Value {
@@ -31,7 +86,8 @@ impl Value {
 
     pub fn name(&self) -> Option<Ustr> {
         match self {
-            Self::Obj(name) => Some(*name),
+            Self::Obj(obj) => obj.name,
+            Self::Function(function) => function.name,
             _ => None,
         }
     }
@@ -45,6 +101,7 @@ impl fmt::Display for Value {
             Self::Nil => "nil".to_string(),
             Self::String(string) => string.to_owned(),
             Self::Obj(value) => value.to_string(),
+            Self::Function(function) => function.to_string(),
         };
         write!(f, "{string}")
     }
@@ -71,5 +128,11 @@ impl From<String> for Value {
 impl From<Ustr> for Value {
     fn from(value: Ustr) -> Self {
         Self::String(value)
+    }
+}
+
+impl From<Function> for Value {
+    fn from(value: Function) -> Self {
+        Self::Function(value)
     }
 }

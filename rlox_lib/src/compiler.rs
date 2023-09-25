@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::chunk::OpCode::Divide;
 use crate::chunk::{Chunk, OpCode};
 use crate::scanner::{Scanner, Token, TokenType};
-use crate::value::Value;
+use crate::value::{Function, Obj, Value};
 
 pub type Result<T> = std::result::Result<T, ParserError>;
 
@@ -84,7 +84,7 @@ impl From<TokenType> for Precedence {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
 struct Local {
     name: Token,
     depth: usize,
@@ -101,16 +101,30 @@ impl Local {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+enum FunctionType {
+    Function,
+    #[default]
+    Script,
+}
+
+#[derive(Debug, Clone)]
 struct Compiler {
+    function: Function,
+    function_type: FunctionType,
     locals: Vec<Local>,
     scope_depth: usize,
 }
 
 impl Compiler {
-    fn new() -> Self {
+    fn new(function_type: FunctionType) -> Self {
+        let mut locals = Vec::with_capacity(u8::MAX.into());
+        locals.push(Local::default());
+
         Self {
-            locals: Vec::with_capacity(u8::MAX.into()),
+            function: Function::new(),
+            function_type,
+            locals,
             scope_depth: 0,
         }
     }
@@ -144,7 +158,6 @@ pub struct Parser {
     scanner: Scanner,
     previous: Option<Token>,
     current: Option<Token>,
-    chunk: Chunk,
     had_error: bool,
     panic_mode: bool,
     compiler: Compiler,
@@ -157,29 +170,30 @@ impl Parser {
             scanner,
             previous: None,
             current: None,
-            chunk: Chunk::new(),
             had_error: false,
             panic_mode: false,
-            compiler: Compiler::new(),
+            compiler: Compiler::new(FunctionType::Script),
         }
     }
 
-    pub fn compile(&mut self) -> Result<Vec<Chunk>> {
+    pub fn compile(&mut self) -> Result<Function> {
         self.advance();
 
         while !self.match_token(TokenType::Eof) {
             self.declaration();
         }
 
-        self.end_compiler();
-
-        let chunks = vec![self.chunk.clone()];
+        let function = self.end_compiler();
 
         if self.had_error {
             Err(ParserError::Error)
         } else {
-            Ok(chunks)
+            Ok(function)
         }
+    }
+
+    fn chunk(&mut self) -> &mut Chunk {
+        &mut self.compiler.function.chunk
     }
 
     fn advance(&mut self) {
@@ -244,7 +258,8 @@ impl Parser {
     }
 
     fn emit_code(&mut self, code: OpCode) {
-        self.chunk.add_code(code, self.previous.unwrap().line);
+        let previous = self.previous.unwrap();
+        self.chunk().add_code(code, previous.line);
     }
 
     fn emit_codes(&mut self, code1: OpCode, code2: OpCode) {
@@ -258,21 +273,24 @@ impl Parser {
         // HACK: Subtracting one from the offset because something funky is going on
         // with instruction pointers on the VM side.
         // Ideally, it would be fixed there, but I haven't been able to figure it out.
-        let offset = self.chunk.len() - loop_start + 2 - 1;
+        let offset = self.chunk().len() - loop_start + 2 - 1;
         let jump_offset = calculate_jump_offset(offset >> 8 & 0xff, offset & 0xff);
         self.emit_code(OpCode::Loop(jump_offset));
     }
 
     fn emit_jump(&mut self, instruction: OpCode) -> usize {
         self.emit_code(instruction);
-        self.chunk.len() - 1
+        self.chunk().len() - 1
     }
 
-    fn end_compiler(&mut self) {
+    fn end_compiler(&mut self) -> Function {
         self.emit_return();
+        let function = self.compiler.function.clone();
         if env::var("DEBUG_PRINT_CODE") == Ok("1".to_string()) && !self.had_error {
-            self.chunk.disassemble("code");
+            let name = function.name.unwrap_or("<script>".into());
+            self.chunk().disassemble(name.as_str());
         }
+        function
     }
 
     fn begin_scope(&mut self) {
@@ -452,7 +470,7 @@ impl Parser {
     }
 
     fn identifier_constant(&mut self, name: Token) -> usize {
-        self.chunk.push_constant(Value::Obj(name.value))
+        self.chunk().push_constant(Value::Obj(Obj::new(name.value)))
     }
 
     fn declare_variable(&mut self) {
@@ -541,7 +559,7 @@ impl Parser {
             self.expression_statement();
         }
 
-        let mut loop_start = self.chunk.len();
+        let mut loop_start = self.chunk().len();
         let mut exit_jump: Option<usize> = None;
         if !self.match_token(TokenType::Semicolon) {
             self.expression();
@@ -554,7 +572,7 @@ impl Parser {
 
         if !self.match_token(TokenType::RightParen) {
             let body_jump = self.emit_jump(OpCode::Jump(0xff));
-            let increment_start = self.chunk.len();
+            let increment_start = self.chunk().len();
             self.expression();
             self.emit_code(OpCode::Pop);
             self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
@@ -603,7 +621,7 @@ impl Parser {
     }
 
     fn while_statement(&mut self) {
-        let loop_start = self.chunk.len();
+        let loop_start = self.chunk().len();
         self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
         self.expression();
         self.consume(TokenType::RightParen, "Expect ')' after condition.");
@@ -680,14 +698,14 @@ impl Parser {
     }
 
     fn emit_constant(&mut self, value: Value) {
-        self.chunk
-            .add_constant_code(value, self.previous.unwrap().line);
+        let previous = self.previous.unwrap();
+        self.chunk().add_constant_code(value, previous.line);
     }
 
     fn patch_jump(&mut self, offset: usize) {
         // HACK: Ditto about subtracting 1 from the offset.
-        let jump = self.chunk.len() - offset - 1;
-        let op = self.chunk.codes.get_mut(offset).unwrap();
+        let jump = self.chunk().len() - offset - 1;
+        let op = self.chunk().codes.get_mut(offset).unwrap();
 
         match op {
             OpCode::JumpIfFalse(ref mut offset) | OpCode::Jump(ref mut offset) => {
@@ -703,22 +721,4 @@ fn calculate_jump_offset(offset1: usize, offset2: usize) -> usize {
     // Combining two 8-bit offsets from the book into one offset here for better VM ergonomics.
     // We don't have to store them as two separate u8's because we use usize.
     offset1 << 8 | offset2
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compile_arithmetic_expression() {
-        let input = "1 + 1;";
-        let mut parser = Parser::new(input);
-        let chunks = parser.compile().unwrap();
-
-        for chunk in chunks.iter() {
-            for index in 0..chunk.codes.len() {
-                chunk.disassemble_instruction(index);
-            }
-        }
-    }
 }

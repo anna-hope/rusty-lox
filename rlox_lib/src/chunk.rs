@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 type JumpOffset = usize;
 type StackSlot = usize;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum OpCode {
     Constant(usize),
     Nil,
@@ -53,7 +53,7 @@ impl Display for OpCode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Chunk {
     pub codes: Vec<OpCode>,
     pub lines: Vec<usize>,

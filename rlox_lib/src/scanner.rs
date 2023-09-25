@@ -40,7 +40,7 @@ pub enum ScannerError {
     UnterminatedString(usize),
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum TokenType {
     // Single-character tokens.
     LeftParen,
@@ -78,6 +78,7 @@ pub enum TokenType {
     For,
     Fun,
     If,
+    #[default]
     Nil,
     Or,
     Print,
@@ -92,7 +93,7 @@ pub enum TokenType {
     Eof,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Token {
     pub token_type: TokenType,
     pub start: usize,
