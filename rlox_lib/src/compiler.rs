@@ -258,14 +258,14 @@ impl Parser {
         // HACK: Subtracting one from the offset because something funky is going on
         // with instruction pointers on the VM side.
         // Ideally, it would be fixed there, but I haven't been able to figure it out.
-        let offset = self.chunk.codes.len() - loop_start + 2 - 1;
+        let offset = self.chunk.len() - loop_start + 2 - 1;
         let jump_offset = calculate_jump_offset(offset >> 8 & 0xff, offset & 0xff);
         self.emit_code(OpCode::Loop(jump_offset));
     }
 
     fn emit_jump(&mut self, instruction: OpCode) -> usize {
         self.emit_code(instruction);
-        self.chunk.codes.len() - 1
+        self.chunk.len() - 1
     }
 
     fn end_compiler(&mut self) {
@@ -396,7 +396,7 @@ impl Parser {
     }
 
     fn get_prefix_rule(&self) -> Option<fn(&mut Parser, bool)> {
-        match self.previous.as_ref().unwrap().token_type {
+        match self.previous.unwrap().token_type {
             TokenType::LeftParen => Some(Self::grouping),
             TokenType::Minus => Some(Self::unary),
             TokenType::Number => Some(Self::number),
@@ -404,7 +404,10 @@ impl Parser {
             TokenType::Bang => Some(Self::unary),
             TokenType::String => Some(Self::string),
             TokenType::Identifier => Some(Self::variable),
-            _ => todo!(),
+            _ => todo!(
+                "{:?} is not yet supported",
+                self.previous.unwrap().token_type
+            ),
         }
     }
 
@@ -527,6 +530,51 @@ impl Parser {
         self.emit_code(OpCode::Pop);
     }
 
+    fn for_statement(&mut self) {
+        self.begin_scope();
+        self.consume(TokenType::LeftParen, "Expect '(' after 'for'.");
+        if self.match_token(TokenType::Semicolon) {
+            // No initializer.
+        } else if self.match_token(TokenType::Var) {
+            self.var_declaration();
+        } else {
+            self.expression_statement();
+        }
+
+        let mut loop_start = self.chunk.len();
+        let mut exit_jump: Option<usize> = None;
+        if !self.match_token(TokenType::Semicolon) {
+            self.expression();
+            self.consume(TokenType::Semicolon, "Expect ';' after loop condition.");
+
+            // Jump out of the loop if the condition is false.
+            exit_jump = Some(self.emit_jump(OpCode::JumpIfFalse(0xff)));
+            self.emit_code(OpCode::Pop); // Condition
+        }
+
+        if !self.match_token(TokenType::RightParen) {
+            let body_jump = self.emit_jump(OpCode::Jump(0xff));
+            let increment_start = self.chunk.len();
+            self.expression();
+            self.emit_code(OpCode::Pop);
+            self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
+
+            self.emit_loop(loop_start);
+            loop_start = increment_start;
+            self.patch_jump(body_jump);
+        }
+
+        self.statement();
+        self.emit_loop(loop_start);
+
+        if let Some(exit_jump) = exit_jump {
+            self.patch_jump(exit_jump);
+            self.emit_code(OpCode::Pop); // Condition.
+        }
+
+        self.end_scope();
+    }
+
     fn if_statement(&mut self) {
         self.consume(TokenType::LeftParen, "Expect '(' after 'if'.");
         self.expression();
@@ -555,7 +603,7 @@ impl Parser {
     }
 
     fn while_statement(&mut self) {
-        let loop_start = self.chunk.codes.len();
+        let loop_start = self.chunk.len();
         self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
         self.expression();
         self.consume(TokenType::RightParen, "Expect ')' after condition.");
@@ -612,6 +660,8 @@ impl Parser {
     fn statement(&mut self) {
         if self.match_token(TokenType::Print) {
             self.print_statement();
+        } else if self.match_token(TokenType::For) {
+            self.for_statement();
         } else if self.match_token(TokenType::If) {
             self.if_statement();
         } else if self.match_token(TokenType::While) {
@@ -636,7 +686,7 @@ impl Parser {
 
     fn patch_jump(&mut self, offset: usize) {
         // HACK: Ditto about subtracting 1 from the offset.
-        let jump = self.chunk.codes.len() - offset - 1;
+        let jump = self.chunk.len() - offset - 1;
         let op = self.chunk.codes.get_mut(offset).unwrap();
 
         match op {
