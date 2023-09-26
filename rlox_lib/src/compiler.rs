@@ -1,12 +1,17 @@
+use std::cell::RefCell;
 use std::ops::Add;
+use std::rc::Rc;
 use std::{env, mem};
 
 use thiserror::Error;
+use ustr::Ustr;
 
 use crate::chunk::OpCode::Divide;
 use crate::chunk::{Chunk, OpCode};
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::{Function, Obj, Value};
+
+type BoxedCompiler = Rc<RefCell<Compiler>>;
 
 pub type Result<T> = std::result::Result<T, ParserError>;
 
@@ -110,6 +115,7 @@ enum FunctionType {
 
 #[derive(Debug, Clone)]
 struct Compiler {
+    enclosing: Option<BoxedCompiler>,
     function: Function,
     function_type: FunctionType,
     locals: Vec<Local>,
@@ -117,12 +123,17 @@ struct Compiler {
 }
 
 impl Compiler {
-    fn new(function_type: FunctionType) -> Self {
+    fn new(
+        enclosing: Option<BoxedCompiler>,
+        function_type: FunctionType,
+        function_name: Option<Ustr>,
+    ) -> Self {
         let mut locals = Vec::with_capacity(u8::MAX.into());
         locals.push(Local::default());
 
         Self {
-            function: Function::new(),
+            enclosing,
+            function: Function::new(function_name),
             function_type,
             locals,
             scope_depth: 0,
@@ -151,6 +162,28 @@ impl Compiler {
         }
         Ok(None)
     }
+
+    fn mark_last_local_initialized(&mut self) {
+        if self.scope_depth == 0 {
+            return;
+        }
+
+        self.locals.last_mut().unwrap().initialized = true;
+    }
+
+    fn chunk(&self) -> &Chunk {
+        &self.function.chunk
+    }
+
+    fn chunk_mut(&mut self) -> &mut Chunk {
+        &mut self.function.chunk
+    }
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new(None, FunctionType::Script, None)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -160,7 +193,7 @@ pub struct Parser {
     current: Option<Token>,
     had_error: bool,
     panic_mode: bool,
-    compiler: Compiler,
+    compiler: BoxedCompiler,
 }
 
 impl Parser {
@@ -172,7 +205,7 @@ impl Parser {
             current: None,
             had_error: false,
             panic_mode: false,
-            compiler: Compiler::new(FunctionType::Script),
+            compiler: Rc::new(RefCell::new(Compiler::default())),
         }
     }
 
@@ -190,10 +223,6 @@ impl Parser {
         } else {
             Ok(function)
         }
-    }
-
-    fn chunk(&mut self) -> &mut Chunk {
-        &mut self.compiler.function.chunk
     }
 
     fn advance(&mut self) {
@@ -257,9 +286,10 @@ impl Parser {
         true
     }
 
-    fn emit_code(&mut self, code: OpCode) {
+    fn emit_code(&self, code: OpCode) {
         let previous = self.previous.unwrap();
-        self.chunk().add_code(code, previous.line);
+        let mut compiler = self.compiler.borrow_mut();
+        compiler.chunk_mut().add_code(code, previous.line);
     }
 
     fn emit_codes(&mut self, code1: OpCode, code2: OpCode) {
@@ -273,39 +303,54 @@ impl Parser {
         // HACK: Subtracting one from the offset because something funky is going on
         // with instruction pointers on the VM side.
         // Ideally, it would be fixed there, but I haven't been able to figure it out.
-        let offset = self.chunk().len() - loop_start + 2 - 1;
+        let mut compiler = self.compiler.borrow_mut();
+        let offset = compiler.chunk_mut().len() - loop_start + 2 - 1;
         let jump_offset = calculate_jump_offset(offset >> 8 & 0xff, offset & 0xff);
         self.emit_code(OpCode::Loop(jump_offset));
     }
 
     fn emit_jump(&mut self, instruction: OpCode) -> usize {
         self.emit_code(instruction);
-        self.chunk().len() - 1
+        let mut compiler = self.compiler.borrow_mut();
+        compiler.chunk_mut().len() - 1
     }
 
     fn end_compiler(&mut self) -> Function {
         self.emit_return();
-        let function = self.compiler.function.clone();
+
+        let function = {
+            let compiler = self.compiler.borrow();
+            compiler.function.clone()
+        };
+
         if env::var("DEBUG_PRINT_CODE") == Ok("1".to_string()) && !self.had_error {
             let name = function.name.unwrap_or("<script>".into());
-            self.chunk().disassemble(name.as_str());
+            let mut compiler = self.compiler.borrow_mut();
+            compiler.chunk_mut().disassemble(name.as_str());
         }
+
+        let maybe_enclosing = self.compiler.borrow().enclosing.as_ref().map(Rc::clone);
+        if let Some(enclosing) = maybe_enclosing {
+            self.compiler = enclosing;
+        }
+
         function
     }
 
     fn begin_scope(&mut self) {
-        self.compiler.scope_depth += 1;
+        self.compiler.borrow_mut().scope_depth += 1;
     }
 
     fn end_scope(&mut self) {
-        self.compiler.scope_depth -= 1;
+        let mut compiler = self.compiler.borrow_mut();
+        compiler.scope_depth -= 1;
 
         // Pop all the locals at the current scope.
-        while !self.compiler.locals.is_empty()
-            && self.compiler.locals.last().unwrap().depth > self.compiler.scope_depth
+        while !compiler.locals.is_empty()
+            && compiler.locals.last().unwrap().depth > compiler.scope_depth
         {
             self.emit_code(OpCode::Pop);
-            self.compiler.locals.pop();
+            compiler.locals.pop();
         }
     }
 
@@ -373,7 +418,8 @@ impl Parser {
     }
 
     fn named_variable(&mut self, name: Token, can_assign: bool) {
-        match self.compiler.resolve_local(name) {
+        let maybe_name = { self.compiler.borrow().resolve_local(name) };
+        match maybe_name {
             Ok(maybe_arg) => {
                 let (get_op, set_op) = if let Some(arg) = maybe_arg {
                     (OpCode::GetLocal(arg), OpCode::SetLocal(arg))
@@ -469,17 +515,25 @@ impl Parser {
         }
     }
 
-    fn identifier_constant(&mut self, name: Token) -> usize {
-        self.chunk().push_constant(Value::Obj(Obj::new(name.value)))
+    fn identifier_constant(&self, name: Token) -> usize {
+        let mut compiler = self.compiler.borrow_mut();
+        compiler
+            .chunk_mut()
+            .push_constant(Value::Obj(Obj::new(name.value)))
     }
 
     fn declare_variable(&mut self) {
-        if self.compiler.scope_depth == 0 {
-            return;
-        }
+        let result = {
+            let mut compiler = self.compiler.borrow_mut();
+            if compiler.scope_depth == 0 {
+                return;
+            }
 
-        let name = self.previous.unwrap();
-        if let Err(error) = self.compiler.add_local(name) {
+            let name = self.previous.unwrap();
+            compiler.add_local(name)
+        };
+
+        if let Err(error) = result {
             self.error_at_previous(error.to_string().as_str());
         }
     }
@@ -488,7 +542,7 @@ impl Parser {
         self.consume(TokenType::Identifier, error_message);
 
         self.declare_variable();
-        if self.compiler.scope_depth > 0 {
+        if self.compiler.borrow().scope_depth > 0 {
             return 0;
         }
 
@@ -496,9 +550,13 @@ impl Parser {
     }
 
     fn define_variable(&mut self, global_index: usize) {
-        if self.compiler.scope_depth > 0 {
-            self.compiler.locals.last_mut().unwrap().initialized = true;
-            return;
+        {
+            let mut compiler = self.compiler.borrow_mut();
+
+            if compiler.scope_depth > 0 {
+                compiler.mark_last_local_initialized();
+                return;
+            }
         }
 
         self.emit_code(OpCode::DefineGlobal(global_index));
@@ -523,6 +581,50 @@ impl Parser {
         }
 
         self.consume(TokenType::RightBrace, "Expect '}' after block.");
+    }
+
+    fn function(&mut self, function_type: FunctionType) {
+        let function_name = self.previous.unwrap().value;
+        let compiler = Rc::new(RefCell::new(Compiler::new(
+            Some(Rc::clone(&self.compiler)),
+            function_type,
+            Some(function_name),
+        )));
+        self.compiler = compiler;
+        self.begin_scope();
+
+        self.consume(TokenType::LeftParen, "Expect '(' after function name.");
+        if !self.check(TokenType::RightParen) {
+            loop {
+                let boxed_compiler = Rc::clone(&self.compiler);
+                let mut compiler = boxed_compiler.borrow_mut();
+                compiler.function.arity += 1;
+                if compiler.function.arity > 255 {
+                    self.error_at_current("Can't have more than 255 parameters.");
+                }
+
+                let constant = self.parse_variable("Expect parameter name");
+                self.define_variable(constant);
+
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenType::RightParen, "Expect ')' after parameters.");
+        self.consume(TokenType::LeftBrace, "Expect '{' before function body.");
+        self.block();
+
+        let function = self.end_compiler();
+        self.emit_constant(function.into());
+    }
+
+    fn fun_declaration(&mut self) {
+        let global = self.parse_variable("Expect function name.");
+        self.compiler.borrow_mut().mark_last_local_initialized();
+        self.function(FunctionType::Function);
+        self.define_variable(global);
     }
 
     fn var_declaration(&mut self) {
@@ -559,7 +661,11 @@ impl Parser {
             self.expression_statement();
         }
 
-        let mut loop_start = self.chunk().len();
+        let mut loop_start = {
+            let compiler = self.compiler.borrow();
+            compiler.chunk().len()
+        };
+
         let mut exit_jump: Option<usize> = None;
         if !self.match_token(TokenType::Semicolon) {
             self.expression();
@@ -572,7 +678,7 @@ impl Parser {
 
         if !self.match_token(TokenType::RightParen) {
             let body_jump = self.emit_jump(OpCode::Jump(0xff));
-            let increment_start = self.chunk().len();
+            let increment_start = { self.compiler.borrow().chunk().len() };
             self.expression();
             self.emit_code(OpCode::Pop);
             self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
@@ -621,7 +727,7 @@ impl Parser {
     }
 
     fn while_statement(&mut self) {
-        let loop_start = self.chunk().len();
+        let loop_start = { self.compiler.borrow().chunk().len() };
         self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
         self.expression();
         self.consume(TokenType::RightParen, "Expect ')' after condition.");
@@ -664,7 +770,9 @@ impl Parser {
     }
 
     fn declaration(&mut self) {
-        if self.match_token(TokenType::Var) {
+        if self.match_token(TokenType::Fun) {
+            self.fun_declaration();
+        } else if self.match_token(TokenType::Var) {
             self.var_declaration();
         } else {
             self.statement();
@@ -699,13 +807,15 @@ impl Parser {
 
     fn emit_constant(&mut self, value: Value) {
         let previous = self.previous.unwrap();
-        self.chunk().add_constant_code(value, previous.line);
+        let mut compiler = self.compiler.borrow_mut();
+        compiler.chunk_mut().add_constant_code(value, previous.line);
     }
 
     fn patch_jump(&mut self, offset: usize) {
+        let mut compiler = self.compiler.borrow_mut();
         // HACK: Ditto about subtracting 1 from the offset.
-        let jump = self.chunk().len() - offset - 1;
-        let op = self.chunk().codes.get_mut(offset).unwrap();
+        let jump = compiler.chunk().len() - offset - 1;
+        let op = compiler.chunk_mut().codes.get_mut(offset).unwrap();
 
         match op {
             OpCode::JumpIfFalse(ref mut offset) | OpCode::Jump(ref mut offset) => {

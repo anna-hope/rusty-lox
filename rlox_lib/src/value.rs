@@ -35,11 +35,11 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn new() -> Self {
+    pub fn new(name: Option<Ustr>) -> Self {
         Self {
             obj: Obj::default(),
             arity: 0,
-            name: None,
+            name,
             chunk: Chunk::new(),
         }
     }
