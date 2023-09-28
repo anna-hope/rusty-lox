@@ -2,13 +2,14 @@ use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::ops::{Div, Mul, Sub};
 use std::rc::Rc;
+use std::time::SystemTime;
 use std::{env, fmt};
 
 use fnv::FnvHashMap;
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::value::Function;
+use crate::value::{Function, NativeFn, ObjNative};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
@@ -21,7 +22,6 @@ const STACK_MAX: usize = FRAMES_MAX * 256;
 pub type Result<T> = std::result::Result<T, InterpretError>;
 
 type Stack = Vec<Value>;
-type BoxedStack = Rc<RefCell<Stack>>;
 
 #[derive(Debug, Error)]
 pub enum InterpretError {
@@ -36,16 +36,14 @@ pub enum InterpretError {
 struct CallFrame {
     function: Function,
     ip: usize,
-    slots: BoxedStack,
     stack_offset: usize,
 }
 
 impl CallFrame {
-    fn new(function: Function, slots: BoxedStack, stack_offset: usize) -> Self {
+    fn new(function: Function, stack_offset: usize) -> Self {
         Self {
             function,
             ip: 0,
-            slots,
             stack_offset,
         }
     }
@@ -54,7 +52,7 @@ impl CallFrame {
 #[derive(Debug, Default)]
 pub struct Vm {
     frames: Vec<Rc<RefCell<CallFrame>>>,
-    stack: BoxedStack,
+    stack: Stack,
     globals: FnvHashMap<Ustr, Value>,
 }
 
@@ -64,17 +62,19 @@ impl Vm {
         let mut stack = Vec::with_capacity(STACK_MAX);
         stack.push(Value::Nil);
 
-        Self {
+        let mut vm = Self {
             frames: Vec::with_capacity(FRAMES_MAX),
-            stack: Rc::new(RefCell::new(stack)),
+            stack,
             globals: FnvHashMap::default(),
-        }
+        };
+        vm.define_native("clock", clock_native);
+        vm
     }
 
     pub fn interpret(&mut self, source: String) -> Result<()> {
         let mut parser = Parser::new(source);
         let function = parser.compile()?;
-        self.stack.borrow_mut().push(function.clone().into());
+        self.stack.push(function.clone().into());
 
         self.call(function, 0).unwrap();
         self.run()
@@ -89,7 +89,7 @@ impl Vm {
 
             if env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into()) {
                 println!("          ");
-                for slot in self.stack.borrow().iter() {
+                for slot in self.stack.iter() {
                     println!("[ {slot:?} ]");
                 }
                 chunk.disassemble_instruction(frame.borrow().ip);
@@ -99,13 +99,13 @@ impl Vm {
 
             match code {
                 OpCode::Print => {
-                    println!("{}", self.stack.borrow_mut().pop().unwrap());
+                    println!("{}", self.stack.pop().unwrap());
                 }
                 OpCode::Jump(offset) => {
                     frame.borrow_mut().ip += offset;
                 }
                 OpCode::JumpIfFalse(offset) => {
-                    if self.stack.borrow().last().unwrap().is_falsey() {
+                    if self.stack.last().unwrap().is_falsey() {
                         frame.borrow_mut().ip += offset;
                     }
                 }
@@ -114,53 +114,61 @@ impl Vm {
                 }
                 OpCode::Call(arg_count) => {
                     let callee = {
-                        let stack = self.stack.borrow();
                         // Go past the function arguments to get the function Value from the stack.
-                        stack.get(stack.len() - arg_count - 1).unwrap().clone()
+                        self.stack
+                            .get(self.stack.len() - arg_count - 1)
+                            .unwrap()
+                            .clone()
                     };
                     self.call_value(callee, arg_count)?;
                     frame = Rc::clone(self.frames.last().unwrap());
                     chunk = frame.borrow().function.chunk.clone();
                 }
                 OpCode::Return => {
-                    let mut stack = self.stack.borrow_mut();
-                    let result = stack.pop().unwrap();
+                    let result = self.stack.pop().unwrap();
                     self.frames.pop();
                     if self.frames.is_empty() {
-                        stack.pop();
+                        self.stack.pop();
                         return Ok(());
                     }
-                    stack.push(result);
+                    self.stack.truncate(frame.borrow().stack_offset);
+                    self.stack.push(result);
                     frame = Rc::clone(self.frames.last().unwrap());
                     chunk = frame.borrow().function.chunk.clone();
                 }
                 OpCode::Constant(index) => {
                     let constant = chunk.read_constant(index);
-                    self.stack.borrow_mut().push(constant.clone());
+                    self.stack.push(constant.clone());
                 }
-                OpCode::Nil => self.stack.borrow_mut().push(Value::Nil),
-                OpCode::True => self.stack.borrow_mut().push(true.into()),
-                OpCode::False => self.stack.borrow_mut().push(false.into()),
+                OpCode::Nil => self.stack.push(Value::Nil),
+                OpCode::True => self.stack.push(true.into()),
+                OpCode::False => self.stack.push(false.into()),
                 OpCode::Pop => {
-                    self.stack.borrow_mut().pop();
+                    self.stack.pop();
                 }
                 OpCode::GetLocal(slot) => {
                     let slot = slot + frame.borrow().stack_offset;
-                    let value = frame.borrow().slots.borrow().get(slot).unwrap().clone();
-                    self.stack.borrow_mut().push(value);
+                    let maybe_value = self.stack.get(slot).cloned();
+                    if let Some(value) = maybe_value {
+                        self.stack.push(value);
+                    } else {
+                        return Err(
+                            self.runtime_error(format!("Could not access stack slot {slot}"))
+                        );
+                    }
                 }
                 OpCode::SetLocal(slot) => {
                     let slot = slot + frame.borrow().stack_offset;
                     // Have to add 1 to the slot with offset here because
                     // reasons.
-                    let value = frame.borrow().slots.borrow().get(slot + 1).unwrap().clone();
-                    self.stack.borrow_mut()[slot] = value;
+                    let value = self.stack.get(slot + 1).unwrap().clone();
+                    self.stack[slot] = value;
                 }
                 OpCode::GetGlobal(slot) => {
                     let value = chunk.read_constant(slot);
                     let name = value.name().unwrap();
                     if let Some(variable) = self.globals.get(&name) {
-                        self.stack.borrow_mut().push(variable.clone());
+                        self.stack.push(variable.clone());
                     } else {
                         return Err(self.runtime_error(format!("Undefined variable: {name}")));
                     }
@@ -169,70 +177,66 @@ impl Vm {
                     let value = chunk.read_constant(slot);
                     let name = value.name().unwrap();
                     self.globals
-                        .insert(name, self.stack.borrow().last().unwrap().clone());
-                    self.stack.borrow_mut().pop();
+                        .insert(name, self.stack.last().unwrap().clone());
+                    self.stack.pop();
                 }
                 OpCode::SetGlobal(slot) => {
                     let value = chunk.read_constant(slot);
                     let name = value.name().unwrap();
                     if let Entry::Occupied(mut e) = self.globals.entry(name) {
-                        e.insert(self.stack.borrow().last().unwrap().clone());
+                        e.insert(self.stack.last().unwrap().clone());
                     } else {
                         return Err(self.runtime_error(format!("Undefined variable '{name}'")));
                     }
                 }
                 OpCode::Equal => {
-                    let mut stack = self.stack.borrow_mut();
-                    let b = stack.pop().unwrap();
-                    let a = stack.pop().unwrap();
-                    self.stack.borrow_mut().push((a == b).into());
+                    let b = self.stack.pop().unwrap();
+                    let a = self.stack.pop().unwrap();
+                    self.stack.push((a == b).into());
                 }
-                OpCode::Greater => comparison_op(&mut self.stack.borrow_mut(), PartialOrd::gt)?,
-                OpCode::Less => comparison_op(&mut self.stack.borrow_mut(), PartialOrd::lt)?,
+                OpCode::Greater => comparison_op(&mut self.stack, PartialOrd::gt)?,
+                OpCode::Less => comparison_op(&mut self.stack, PartialOrd::lt)?,
                 OpCode::Add => {
-                    let mut stack = self.stack.borrow_mut();
-                    let a = stack.get(stack.len() - 2).unwrap().clone();
-                    let b = stack.last().unwrap().clone();
+                    let a = self.stack.get(self.stack.len() - 2).unwrap().clone();
+                    let b = self.stack.last().unwrap().clone();
 
-                    match (a, b) {
+                    match (a.clone(), b.clone()) {
                         (Value::String(a), Value::String(b)) => {
-                            stack.pop();
-                            stack.pop();
+                            self.stack.pop();
+                            self.stack.pop();
                             let a = a.replace('"', "");
                             let b = b.replace('"', "");
                             let result = format!("\"{}\"", a + b.as_str());
-                            stack.push(result.into());
+                            self.stack.push(result.into());
                         }
                         (Value::Number(a), Value::Number(b)) => {
-                            stack.pop();
-                            stack.pop();
-                            stack.push((a + b).into());
+                            self.stack.pop();
+                            self.stack.pop();
+                            self.stack.push((a + b).into());
                         }
                         _ => {
-                            return Err(
-                                self.runtime_error("Operands must be two numbers or two strings.")
-                            );
+                            return Err(self.runtime_error(format!(
+                                "Operands must be two numbers or two strings, got {a} and {b}."
+                            )));
                         }
                     }
                 }
-                OpCode::Subtract => binary_op(&mut self.stack.borrow_mut(), Sub::sub)?,
-                OpCode::Multiply => binary_op(&mut self.stack.borrow_mut(), Mul::mul)?,
-                OpCode::Divide => binary_op(&mut self.stack.borrow_mut(), Div::div)?,
+                OpCode::Subtract => binary_op(&mut self.stack, Sub::sub)?,
+                OpCode::Multiply => binary_op(&mut self.stack, Mul::mul)?,
+                OpCode::Divide => binary_op(&mut self.stack, Div::div)?,
                 OpCode::Not => {
-                    let mut stack = self.stack.borrow_mut();
-                    let bool_val = stack.pop().unwrap().is_falsey();
-                    stack.push(bool_val.into());
+                    let bool_val = self.stack.pop().unwrap().is_falsey();
+                    self.stack.push(bool_val.into());
                 }
                 OpCode::Negate => {
                     // Inspect the value from the stack without popping it first,
                     // in case it's not a number.
-                    let mut stack = self.stack.borrow_mut();
-                    let value = stack.last().unwrap().clone();
+                    let value = self.stack.last().unwrap().clone();
 
                     match value {
                         Value::Number(value) => {
-                            stack.pop();
-                            stack.push(Value::Number(-value))
+                            self.stack.pop();
+                            self.stack.push(Value::Number(-value))
                         }
                         _ => {
                             return Err(self.runtime_error("Operand must be a number."));
@@ -255,12 +259,8 @@ impl Vm {
             return Err(self.runtime_error("Stack overflow."));
         }
 
-        let stack_pointer = self.stack.borrow().len() - arg_count - 1;
-        let frame = Rc::new(RefCell::new(CallFrame::new(
-            function,
-            Rc::clone(&self.stack),
-            stack_pointer,
-        )));
+        let stack_offset = self.stack.len() - arg_count - 1;
+        let frame = Rc::new(RefCell::new(CallFrame::new(function, stack_offset)));
         self.frames.push(frame);
         Ok(())
     }
@@ -268,6 +268,16 @@ impl Vm {
     fn call_value(&mut self, callee: Value, arg_count: usize) -> Result<()> {
         match callee {
             Value::Function(function) => self.call(function, arg_count),
+            Value::ObjNative(native) => {
+                let stack_len = self.stack.len();
+                let args = &mut self.stack.as_mut_slice()[0..stack_len - arg_count];
+                let result = (native.function)(arg_count, args);
+                for _ in 0..arg_count + 1 {
+                    self.stack.pop();
+                }
+                self.stack.push(result);
+                Ok(())
+            }
             _ => Err(self.runtime_error("Can only call functions and classes.")),
         }
     }
@@ -289,6 +299,18 @@ impl Vm {
             }
         }
         InterpretError::Runtime(full_msg)
+    }
+
+    fn define_native(&mut self, name: &str, function: NativeFn) {
+        let native_fn_val = Value::ObjNative(ObjNative::new(function));
+
+        // Push onto the stack to prevent them from being collected by GC.
+        self.stack.push(Value::String(name.into()));
+        self.stack.push(native_fn_val.clone());
+        self.globals.insert(name.into(), native_fn_val);
+
+        self.stack.pop();
+        self.stack.pop();
     }
 }
 
@@ -337,6 +359,14 @@ where
         }
     }
     Ok(())
+}
+
+fn clock_native(_arg_count: usize, _args: &mut [Value]) -> Value {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        .into()
 }
 
 // #[cfg(test)]

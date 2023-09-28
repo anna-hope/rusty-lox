@@ -56,6 +56,23 @@ impl fmt::Display for Function {
     }
 }
 
+pub type NativeFn = fn(arg_count: usize, args: &mut [Value]) -> Value;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjNative {
+    pub obj: Obj,
+    pub function: NativeFn,
+}
+
+impl ObjNative {
+    pub fn new(function: NativeFn) -> Self {
+        Self {
+            obj: Obj::default(),
+            function,
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub enum Value {
     Bool(bool),
@@ -65,6 +82,7 @@ pub enum Value {
     String(Ustr),
     Obj(Obj),
     Function(Function),
+    ObjNative(ObjNative),
 }
 
 impl Value {
@@ -102,6 +120,7 @@ impl fmt::Display for Value {
             Self::String(string) => string.to_owned(),
             Self::Obj(value) => value.to_string(),
             Self::Function(function) => function.to_string(),
+            Self::ObjNative(_) => "<native fn>".to_string(),
         };
         write!(f, "{string}")
     }
