@@ -272,9 +272,9 @@ impl Vm {
             let function = &frame.function;
             // -1 because the ip has already moved on to the next instruction
             // but we want the stack trace to point to the previous failed instruction.
-            // // let line = function.chunk.lines[frame.ip - 1];
-            // //
-            // full_msg.push_str(format!("line {line} in ").as_str());
+            let line = function.chunk.lines[frame.ip - 1];
+
+            full_msg.push_str(format!("line {line} in ").as_str());
             if let Some(name) = function.name {
                 full_msg.push_str(format!("{name}\n").as_str());
             } else {
