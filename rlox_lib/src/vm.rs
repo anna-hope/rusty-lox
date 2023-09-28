@@ -71,20 +71,16 @@ impl Vm {
         }
     }
 
-    pub fn interpret(&mut self, source: String) -> Result<Value> {
+    pub fn interpret(&mut self, source: String) -> Result<()> {
         let mut parser = Parser::new(source);
         let function = parser.compile()?;
         self.stack.borrow_mut().push(function.clone().into());
 
         self.call(function, 0).unwrap();
-        if let Some(result) = self.run().transpose() {
-            result
-        } else {
-            Ok(Value::default())
-        }
+        self.run()
     }
 
-    fn run(&mut self) -> Result<Option<Value>> {
+    fn run(&mut self) -> Result<()> {
         let mut frame = Rc::clone(self.frames.last().unwrap());
         let mut chunk = frame.borrow().function.chunk.clone();
 
@@ -126,7 +122,18 @@ impl Vm {
                     frame = Rc::clone(self.frames.last().unwrap());
                     chunk = frame.borrow().function.chunk.clone();
                 }
-                OpCode::Return => return Ok(self.stack.borrow_mut().pop()),
+                OpCode::Return => {
+                    let mut stack = self.stack.borrow_mut();
+                    let result = stack.pop().unwrap();
+                    self.frames.pop();
+                    if self.frames.is_empty() {
+                        stack.pop();
+                        return Ok(());
+                    }
+                    stack.push(result);
+                    frame = Rc::clone(self.frames.last().unwrap());
+                    chunk = frame.borrow().function.chunk.clone();
+                }
                 OpCode::Constant(index) => {
                     let constant = chunk.read_constant(index);
                     self.stack.borrow_mut().push(constant.clone());

@@ -760,6 +760,20 @@ impl Parser {
         self.emit_code(OpCode::Print);
     }
 
+    fn return_statement(&mut self) {
+        if matches!(self.compiler.borrow().function_type, FunctionType::Script) {
+            self.error_at_previous("Can't return from top-level code.");
+        }
+
+        if self.match_token(TokenType::Semicolon) {
+            self.emit_return();
+        } else {
+            self.expression();
+            self.consume(TokenType::Semicolon, "Expect ';' after return value.");
+            self.emit_code(OpCode::Return);
+        }
+    }
+
     fn while_statement(&mut self) {
         let loop_start = { self.compiler.borrow().chunk().len() };
         self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
@@ -824,6 +838,8 @@ impl Parser {
             self.for_statement();
         } else if self.match_token(TokenType::If) {
             self.if_statement();
+        } else if self.match_token(TokenType::Return) {
+            self.return_statement();
         } else if self.match_token(TokenType::While) {
             self.while_statement();
         } else if self.match_token(TokenType::LeftBrace) {
@@ -835,17 +851,19 @@ impl Parser {
         }
     }
 
-    fn emit_return(&mut self) {
+    fn emit_return(&self) {
+        // Return nil if the function doesn't return anything.
+        self.emit_code(OpCode::Nil);
         self.emit_code(OpCode::Return);
     }
 
-    fn emit_constant(&mut self, value: Value) {
+    fn emit_constant(&self, value: Value) {
         let previous = self.previous.unwrap();
         let mut compiler = self.compiler.borrow_mut();
         compiler.chunk_mut().add_constant_code(value, previous.line);
     }
 
-    fn patch_jump(&mut self, offset: usize) {
+    fn patch_jump(&self, offset: usize) {
         let mut compiler = self.compiler.borrow_mut();
         // HACK: Ditto about subtracting 1 from the offset.
         let jump = compiler.chunk().len() - offset - 1;

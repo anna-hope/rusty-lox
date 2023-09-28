@@ -46,15 +46,13 @@ fn repl(vm: &mut Vm) {
             break;
         }
 
-        if let Ok(value) = vm.interpret(buffer) {
-            println!("{value}");
+        if vm.interpret(buffer).is_err() {
+            continue;
         }
     }
 }
 
 fn run_file(path: String, vm: &mut Vm) -> Result<()> {
     let source = fs::read_to_string(path).expect("Should be able to read the file");
-    let value = vm.interpret(source)?;
-    println!("{value}");
-    Ok(())
+    vm.interpret(source)
 }
