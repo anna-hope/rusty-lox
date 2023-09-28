@@ -10,7 +10,7 @@ use ustr::Ustr;
 
 use crate::value::Function;
 use crate::{
-    chunk::{Chunk, OpCode},
+    chunk::OpCode,
     compiler::{Parser, ParserError},
     value::Value,
 };
@@ -37,30 +37,36 @@ struct CallFrame {
     function: Function,
     ip: usize,
     slots: BoxedStack,
+    stack_offset: usize,
 }
 
 impl CallFrame {
-    fn new(function: Function, slots: Rc<RefCell<Stack>>) -> Self {
+    fn new(function: Function, slots: BoxedStack, stack_offset: usize) -> Self {
         Self {
             function,
             ip: 0,
             slots,
+            stack_offset,
         }
     }
 }
 
 #[derive(Debug, Default)]
 pub struct Vm {
-    frames: Vec<CallFrame>,
+    frames: Vec<Rc<RefCell<CallFrame>>>,
     stack: BoxedStack,
     globals: FnvHashMap<Ustr, Value>,
 }
 
 impl Vm {
     pub fn new() -> Self {
+        // Set aside the first stack slot for methods later.
+        let mut stack = Vec::with_capacity(STACK_MAX);
+        stack.push(Value::Nil);
+
         Self {
             frames: Vec::with_capacity(FRAMES_MAX),
-            stack: Rc::new(RefCell::new(Vec::with_capacity(STACK_MAX))),
+            stack: Rc::new(RefCell::new(stack)),
             globals: FnvHashMap::default(),
         }
     }
@@ -70,9 +76,7 @@ impl Vm {
         let function = parser.compile()?;
         self.stack.borrow_mut().push(function.clone().into());
 
-        let frame = CallFrame::new(function.clone(), Rc::clone(&self.stack));
-        self.frames.push(frame);
-
+        self.call(function, 0).unwrap();
         if let Some(result) = self.run().transpose() {
             result
         } else {
@@ -81,36 +85,46 @@ impl Vm {
     }
 
     fn run(&mut self) -> Result<Option<Value>> {
-        let frame = &mut self.frames[0];
-        let chunk = &frame.function.chunk;
+        let mut frame = Rc::clone(self.frames.last().unwrap());
+        let mut chunk = frame.borrow().function.chunk.clone();
 
         loop {
-            let code = chunk.codes[frame.ip];
+            let code = chunk.codes[frame.borrow().ip];
 
             if env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into()) {
-                print!("          ");
+                println!("          ");
                 for slot in self.stack.borrow().iter() {
                     println!("[ {slot:?} ]");
                 }
-                chunk.disassemble_instruction(frame.ip);
+                chunk.disassemble_instruction(frame.borrow().ip);
             }
 
-            frame.ip += 1;
+            frame.borrow_mut().ip += 1;
 
             match code {
                 OpCode::Print => {
                     println!("{}", self.stack.borrow_mut().pop().unwrap());
                 }
                 OpCode::Jump(offset) => {
-                    frame.ip += offset;
+                    frame.borrow_mut().ip += offset;
                 }
                 OpCode::JumpIfFalse(offset) => {
                     if self.stack.borrow().last().unwrap().is_falsey() {
-                        frame.ip += offset;
+                        frame.borrow_mut().ip += offset;
                     }
                 }
                 OpCode::Loop(offset) => {
-                    frame.ip -= offset;
+                    frame.borrow_mut().ip -= offset;
+                }
+                OpCode::Call(arg_count) => {
+                    let callee = {
+                        let stack = self.stack.borrow();
+                        // Go past the function arguments to get the function Value from the stack.
+                        stack.get(stack.len() - arg_count - 1).unwrap().clone()
+                    };
+                    self.call_value(callee, arg_count)?;
+                    frame = Rc::clone(self.frames.last().unwrap());
+                    chunk = frame.borrow().function.chunk.clone();
                 }
                 OpCode::Return => return Ok(self.stack.borrow_mut().pop()),
                 OpCode::Constant(index) => {
@@ -124,19 +138,15 @@ impl Vm {
                     self.stack.borrow_mut().pop();
                 }
                 OpCode::GetLocal(slot) => {
-                    let value = {
-                        let slots = frame.slots.borrow();
-                        let value = slots.get(slot).unwrap();
-                        value.clone()
-                    };
+                    let slot = slot + frame.borrow().stack_offset;
+                    let value = frame.borrow().slots.borrow().get(slot).unwrap().clone();
                     self.stack.borrow_mut().push(value);
                 }
                 OpCode::SetLocal(slot) => {
-                    let value = {
-                        let slots = frame.slots.borrow();
-                        let value = slots.last().unwrap();
-                        value.clone()
-                    };
+                    let slot = slot + frame.borrow().stack_offset;
+                    // Have to add 1 to the slot with offset here because
+                    // reasons.
+                    let value = frame.borrow().slots.borrow().get(slot + 1).unwrap().clone();
                     self.stack.borrow_mut()[slot] = value;
                 }
                 OpCode::GetGlobal(slot) => {
@@ -226,11 +236,52 @@ impl Vm {
         }
     }
 
+    fn call(&mut self, function: Function, arg_count: usize) -> Result<()> {
+        if arg_count > function.arity {
+            return Err(self.runtime_error(format!(
+                "Expected {} arguments but got {arg_count}.",
+                function.arity
+            )));
+        }
+
+        if self.frames.len() == FRAMES_MAX {
+            return Err(self.runtime_error("Stack overflow."));
+        }
+
+        let stack_pointer = self.stack.borrow().len() - arg_count - 1;
+        let frame = Rc::new(RefCell::new(CallFrame::new(
+            function,
+            Rc::clone(&self.stack),
+            stack_pointer,
+        )));
+        self.frames.push(frame);
+        Ok(())
+    }
+
+    fn call_value(&mut self, callee: Value, arg_count: usize) -> Result<()> {
+        match callee {
+            Value::Function(function) => self.call(function, arg_count),
+            _ => Err(self.runtime_error("Can only call functions and classes.")),
+        }
+    }
+
     fn runtime_error(&self, msg: impl fmt::Display) -> InterpretError {
-        let frame = self.frames.last().unwrap();
-        let line = frame.function.chunk.lines[frame.ip];
-        let msg = format!("{msg}\nline {} in script", line);
-        InterpretError::Runtime(msg)
+        let mut full_msg = format!("{msg}\n");
+        for frame in self.frames.iter() {
+            let frame = frame.borrow();
+            let function = &frame.function;
+            // -1 because the ip has already moved on to the next instruction
+            // but we want the stack trace to point to the previous failed instruction.
+            // // let line = function.chunk.lines[frame.ip - 1];
+            // //
+            // full_msg.push_str(format!("line {line} in ").as_str());
+            if let Some(name) = function.name {
+                full_msg.push_str(format!("{name}\n").as_str());
+            } else {
+                full_msg.push_str("script\n");
+            }
+        }
+        InterpretError::Runtime(full_msg)
     }
 }
 

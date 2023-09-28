@@ -69,7 +69,7 @@ impl Add<u8> for Precedence {
 impl From<TokenType> for Precedence {
     fn from(value: TokenType) -> Self {
         match value {
-            TokenType::LeftParen | TokenType::RightParen => Precedence::Lowest,
+            TokenType::RightParen => Precedence::Lowest,
             TokenType::LeftBrace | TokenType::RightBrace => Precedence::Lowest,
             TokenType::Comma => Precedence::Lowest,
             TokenType::Dot => Precedence::Lowest,
@@ -84,6 +84,7 @@ impl From<TokenType> for Precedence {
             | TokenType::LessEqual => Precedence::Comparison,
             TokenType::And => Precedence::And,
             TokenType::Or => Precedence::Or,
+            TokenType::LeftParen => Precedence::Call,
             _ => Precedence::Lowest,
         }
     }
@@ -237,19 +238,19 @@ impl Parser {
         }
     }
 
-    fn error_at_current(&mut self, message: &str) {
-        self.error_at(self.current.as_ref().unwrap(), message);
+    fn error_at_current(&mut self, msg: &str) {
+        self.error_at(self.current.as_ref().unwrap(), msg);
         self.panic_mode = true;
         self.had_error = true;
     }
 
-    fn error_at_previous(&mut self, message: &str) {
-        self.error_at(self.previous.as_ref().unwrap(), message);
+    fn error_at_previous(&mut self, msg: &str) {
+        self.error_at(self.previous.as_ref().unwrap(), msg);
         self.panic_mode = true;
         self.had_error = true;
     }
 
-    fn error_at(&self, token: &Token, message: &str) {
+    fn error_at(&self, token: &Token, msg: &str) {
         if self.panic_mode {
             return;
         }
@@ -263,14 +264,14 @@ impl Parser {
             _ => eprint!(" at {}: {}", token.start, token.value),
         }
 
-        eprintln!(": {}", message);
+        eprintln!(": {}", msg);
     }
 
-    fn consume(&mut self, token_type: TokenType, message: &str) {
+    fn consume(&mut self, token_type: TokenType, msg: &str) {
         if self.current.as_ref().unwrap().token_type == token_type {
             self.advance();
         } else {
-            self.error_at_current(message);
+            self.error_at_current(msg);
         }
     }
 
@@ -292,24 +293,21 @@ impl Parser {
         compiler.chunk_mut().add_code(code, previous.line);
     }
 
-    fn emit_codes(&mut self, code1: OpCode, code2: OpCode) {
-        // Not sure if we'll use this method this way,
-        // but it's defined this way in the book so we'll keep it like this for now.
+    fn emit_codes(&self, code1: OpCode, code2: OpCode) {
         self.emit_code(code1);
         self.emit_code(code2);
     }
 
-    fn emit_loop(&mut self, loop_start: usize) {
+    fn emit_loop(&self, loop_start: usize) {
         // HACK: Subtracting one from the offset because something funky is going on
         // with instruction pointers on the VM side.
         // Ideally, it would be fixed there, but I haven't been able to figure it out.
-        let mut compiler = self.compiler.borrow_mut();
-        let offset = compiler.chunk_mut().len() - loop_start + 2 - 1;
+        let offset = self.compiler.borrow().chunk().len() - loop_start + 2 - 1;
         let jump_offset = calculate_jump_offset(offset >> 8 & 0xff, offset & 0xff);
         self.emit_code(OpCode::Loop(jump_offset));
     }
 
-    fn emit_jump(&mut self, instruction: OpCode) -> usize {
+    fn emit_jump(&self, instruction: OpCode) -> usize {
         self.emit_code(instruction);
         let mut compiler = self.compiler.borrow_mut();
         compiler.chunk_mut().len() - 1
@@ -337,20 +335,30 @@ impl Parser {
         function
     }
 
-    fn begin_scope(&mut self) {
+    fn begin_scope(&self) {
         self.compiler.borrow_mut().scope_depth += 1;
     }
 
-    fn end_scope(&mut self) {
-        let mut compiler = self.compiler.borrow_mut();
-        compiler.scope_depth -= 1;
+    fn end_scope(&self) {
+        let num_pops = {
+            let mut compiler = self.compiler.borrow_mut();
+            compiler.scope_depth -= 1;
 
-        // Pop all the locals at the current scope.
-        while !compiler.locals.is_empty()
-            && compiler.locals.last().unwrap().depth > compiler.scope_depth
-        {
+            let mut num_pops = 0;
+
+            // Pop all the locals at the current scope.
+            while !compiler.locals.is_empty()
+                && compiler.locals.last().unwrap().depth > compiler.scope_depth
+            {
+                num_pops += 1;
+                compiler.locals.pop();
+            }
+
+            num_pops
+        };
+
+        for _ in 0..num_pops {
             self.emit_code(OpCode::Pop);
-            compiler.locals.pop();
         }
     }
 
@@ -372,6 +380,11 @@ impl Parser {
             TokenType::LessEqual => self.emit_codes(OpCode::Greater, OpCode::Not),
             _ => unreachable!(),
         }
+    }
+
+    fn call(&mut self) {
+        let arg_count = self.argument_list();
+        self.emit_code(OpCode::Call(arg_count));
     }
 
     fn literal(&mut self, _can_assign: bool) {
@@ -468,10 +481,7 @@ impl Parser {
             TokenType::Bang => Some(Self::unary),
             TokenType::String => Some(Self::string),
             TokenType::Identifier => Some(Self::variable),
-            _ => todo!(
-                "{:?} is not yet supported",
-                self.previous.unwrap().token_type
-            ),
+            _ => None,
         }
     }
 
@@ -485,6 +495,7 @@ impl Parser {
             TokenType::Less | TokenType::LessEqual => Some(Self::binary),
             TokenType::And => Some(Self::and),
             TokenType::Or => Some(Self::or),
+            TokenType::LeftParen => Some(Self::call),
             _ => None,
         }
     }
@@ -538,8 +549,8 @@ impl Parser {
         }
     }
 
-    fn parse_variable(&mut self, error_message: &str) -> usize {
-        self.consume(TokenType::Identifier, error_message);
+    fn parse_variable(&mut self, error_msg: &str) -> usize {
+        self.consume(TokenType::Identifier, error_msg);
 
         self.declare_variable();
         if self.compiler.borrow().scope_depth > 0 {
@@ -560,6 +571,27 @@ impl Parser {
         }
 
         self.emit_code(OpCode::DefineGlobal(global_index));
+    }
+
+    fn argument_list(&mut self) -> usize {
+        let mut arg_count = 0;
+        if !self.check(TokenType::RightParen) {
+            loop {
+                self.expression();
+
+                if arg_count == 255 {
+                    self.error_at_previous("Can't have more than 255 arguments.");
+                }
+
+                arg_count += 1;
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenType::RightParen, "Expect ')' after arguments.");
+        arg_count
     }
 
     fn and(&mut self) {
@@ -596,11 +628,13 @@ impl Parser {
         self.consume(TokenType::LeftParen, "Expect '(' after function name.");
         if !self.check(TokenType::RightParen) {
             loop {
-                let boxed_compiler = Rc::clone(&self.compiler);
-                let mut compiler = boxed_compiler.borrow_mut();
-                compiler.function.arity += 1;
-                if compiler.function.arity > 255 {
-                    self.error_at_current("Can't have more than 255 parameters.");
+                {
+                    let boxed_compiler = Rc::clone(&self.compiler);
+                    let mut compiler = boxed_compiler.borrow_mut();
+                    compiler.function.arity += 1;
+                    if compiler.function.arity > 255 {
+                        self.error_at_current("Can't have more than 255 parameters.");
+                    }
                 }
 
                 let constant = self.parse_variable("Expect parameter name");

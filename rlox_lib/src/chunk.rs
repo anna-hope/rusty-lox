@@ -29,6 +29,7 @@ pub enum OpCode {
     Jump(JumpOffset),
     JumpIfFalse(JumpOffset),
     Loop(JumpOffset),
+    Call(usize),
     Return,
 }
 
@@ -128,6 +129,9 @@ impl Chunk {
                     "{instruction:-16} {offset:4} -> {}",
                     offset + 1 - jump_offset
                 );
+            }
+            OpCode::Call(arg_count) => {
+                println!("{instruction:-16} {arg_count:4}");
             }
             _ => {
                 println!("{instruction}");
