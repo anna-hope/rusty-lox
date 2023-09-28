@@ -46,8 +46,9 @@ fn repl(vm: &mut Vm) {
             break;
         }
 
-        if vm.interpret(buffer).is_err() {
-            continue;
+        match vm.interpret(buffer) {
+            Ok(_) => continue,
+            Err(error) => eprintln!("{error}"),
         }
     }
 }
