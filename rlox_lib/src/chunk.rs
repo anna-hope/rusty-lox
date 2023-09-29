@@ -55,7 +55,7 @@ impl Display for OpCode {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Chunk {
+pub(crate) struct Chunk {
     pub codes: Vec<OpCode>,
     pub lines: Vec<usize>,
     constants: Vec<Value>,

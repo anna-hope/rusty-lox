@@ -184,7 +184,7 @@ impl Default for Compiler {
 }
 
 #[derive(Debug, Clone)]
-pub struct Parser {
+pub(crate) struct Parser {
     scanner: Scanner,
     previous: Option<Token>,
     current: Option<Token>,

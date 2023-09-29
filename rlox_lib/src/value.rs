@@ -6,10 +6,10 @@ use ustr::Ustr;
 
 use crate::chunk::Chunk;
 
-pub type BoxedValue = Rc<Value>;
+pub(crate) type BoxedValue = Rc<Value>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct Obj {
+pub(crate) struct Obj {
     pub name: Option<Ustr>,
 }
 
@@ -31,7 +31,7 @@ impl fmt::Display for Obj {
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct Function {
+pub(crate) struct Function {
     pub obj: Obj,
     pub arity: usize,
     pub chunk: Rc<RefCell<Chunk>>,
@@ -62,10 +62,10 @@ impl fmt::Display for Function {
 
 pub(crate) type NativeFnResult = Result<Option<Value>, Box<dyn std::error::Error>>;
 
-pub type NativeFn = fn(args: &mut [BoxedValue]) -> NativeFnResult;
+pub(crate) type NativeFn = fn(args: &mut [BoxedValue]) -> NativeFnResult;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ObjNative {
+pub(crate) struct ObjNative {
     pub obj: Obj,
     pub function: NativeFn,
 }
@@ -80,7 +80,7 @@ impl ObjNative {
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
-pub enum Value {
+pub(crate) enum Value {
     Bool(bool),
     #[default]
     Nil,
@@ -92,20 +92,12 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn is_number(&self) -> bool {
-        matches!(self, Self::Number(_))
-    }
-
     pub fn is_falsey(&self) -> bool {
         match self {
             Self::Nil => true,
             Self::Bool(value) => !value,
             _ => false,
         }
-    }
-
-    pub fn is_string(&self) -> bool {
-        matches!(self, Self::String(_))
     }
 
     pub fn name(&self) -> Option<Ustr> {
