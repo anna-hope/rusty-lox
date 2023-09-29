@@ -1,8 +1,12 @@
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 use ustr::Ustr;
 
 use crate::chunk::Chunk;
+
+pub type BoxedValue = Rc<Value>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Obj {
@@ -30,7 +34,7 @@ impl fmt::Display for Obj {
 pub struct Function {
     pub obj: Obj,
     pub arity: usize,
-    pub chunk: Chunk,
+    pub chunk: Rc<RefCell<Chunk>>,
     pub name: Option<Ustr>,
 }
 
@@ -40,7 +44,7 @@ impl Function {
             obj: Obj::default(),
             arity: 0,
             name,
-            chunk: Chunk::new(),
+            chunk: Rc::new(RefCell::new(Chunk::new())),
         }
     }
 }
@@ -56,7 +60,7 @@ impl fmt::Display for Function {
     }
 }
 
-pub type NativeFn = fn(arg_count: usize, args: &mut [Value]) -> Value;
+pub type NativeFn = fn(arg_count: usize, args: &mut [BoxedValue]) -> Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjNative {
@@ -81,7 +85,7 @@ pub enum Value {
     Number(f64),
     String(Ustr),
     Obj(Obj),
-    Function(Function),
+    Function(Rc<Function>),
     ObjNative(ObjNative),
 }
 
@@ -150,8 +154,8 @@ impl From<Ustr> for Value {
     }
 }
 
-impl From<Function> for Value {
-    fn from(value: Function) -> Self {
+impl From<Rc<Function>> for Value {
+    fn from(value: Rc<Function>) -> Self {
         Self::Function(value)
     }
 }

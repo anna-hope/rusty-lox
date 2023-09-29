@@ -13,7 +13,7 @@ use crate::value::{Function, NativeFn, ObjNative};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
-    value::Value,
+    value::{BoxedValue, Value},
 };
 
 const FRAMES_MAX: usize = 64;
@@ -21,7 +21,7 @@ const STACK_MAX: usize = FRAMES_MAX * 256;
 
 pub type Result<T> = std::result::Result<T, InterpretError>;
 
-type Stack = Vec<Value>;
+type Stack = Vec<BoxedValue>;
 
 #[derive(Debug, Error)]
 pub enum InterpretError {
@@ -34,13 +34,13 @@ pub enum InterpretError {
 
 #[derive(Debug)]
 struct CallFrame {
-    function: Function,
+    function: Rc<Function>,
     ip: usize,
     stack_offset: usize,
 }
 
 impl CallFrame {
-    fn new(function: Function, stack_offset: usize) -> Self {
+    fn new(function: Rc<Function>, stack_offset: usize) -> Self {
         Self {
             function,
             ip: 0,
@@ -53,14 +53,14 @@ impl CallFrame {
 pub struct Vm {
     frames: Vec<Rc<RefCell<CallFrame>>>,
     stack: Stack,
-    globals: FnvHashMap<Ustr, Value>,
+    globals: FnvHashMap<Ustr, BoxedValue>,
 }
 
 impl Vm {
     pub fn new() -> Self {
         // Set aside the first stack slot for methods later.
         let mut stack = Vec::with_capacity(STACK_MAX);
-        stack.push(Value::Nil);
+        stack.push(Rc::new(Value::Nil));
 
         let mut vm = Self {
             frames: Vec::with_capacity(FRAMES_MAX),
@@ -73,8 +73,9 @@ impl Vm {
 
     pub fn interpret(&mut self, source: String) -> Result<()> {
         let mut parser = Parser::new(source);
-        let function = parser.compile()?;
-        self.stack.push(function.clone().into());
+        let function = Rc::new(parser.compile()?);
+        self.stack
+            .push(Rc::new(Value::Function(Rc::clone(&function))));
 
         self.call(function, 0).unwrap();
         self.run()
@@ -82,19 +83,19 @@ impl Vm {
 
     fn run(&mut self) -> Result<()> {
         let mut frame = Rc::clone(self.frames.last().unwrap());
-        let mut chunk = frame.borrow().function.chunk.clone();
+        let mut chunk = Rc::clone(&frame.borrow().function.chunk);
 
         let trace_execution = env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into());
 
         loop {
-            let code = chunk.codes[frame.borrow().ip];
+            let code = chunk.borrow().codes[frame.borrow().ip];
 
             if trace_execution {
                 println!("          ");
                 for slot in self.stack.iter() {
                     println!("[ {slot:?} ]");
                 }
-                chunk.disassemble_instruction(frame.borrow().ip);
+                chunk.borrow().disassemble_instruction(frame.borrow().ip);
             }
 
             frame.borrow_mut().ip += 1;
@@ -139,12 +140,12 @@ impl Vm {
                     chunk = frame.borrow().function.chunk.clone();
                 }
                 OpCode::Constant(index) => {
-                    let constant = chunk.read_constant(index);
-                    self.stack.push(constant.clone());
+                    let constant = chunk.borrow().read_constant(index).clone();
+                    self.stack.push(Rc::new(constant));
                 }
-                OpCode::Nil => self.stack.push(Value::Nil),
-                OpCode::True => self.stack.push(true.into()),
-                OpCode::False => self.stack.push(false.into()),
+                OpCode::Nil => self.stack.push(Rc::new(Value::Nil)),
+                OpCode::True => self.stack.push(Rc::new(true.into())),
+                OpCode::False => self.stack.push(Rc::new(false.into())),
                 OpCode::Pop => {
                     self.stack.pop();
                 }
@@ -167,8 +168,7 @@ impl Vm {
                     self.stack[slot] = value;
                 }
                 OpCode::GetGlobal(slot) => {
-                    let value = chunk.read_constant(slot);
-                    let name = value.name().unwrap();
+                    let name = chunk.borrow().read_constant(slot).name().unwrap();
                     if let Some(variable) = self.globals.get(&name) {
                         self.stack.push(variable.clone());
                     } else {
@@ -176,15 +176,13 @@ impl Vm {
                     }
                 }
                 OpCode::DefineGlobal(slot) => {
-                    let value = chunk.read_constant(slot);
-                    let name = value.name().unwrap();
+                    let name = chunk.borrow().read_constant(slot).name().unwrap();
                     self.globals
                         .insert(name, self.stack.last().unwrap().clone());
                     self.stack.pop();
                 }
                 OpCode::SetGlobal(slot) => {
-                    let value = chunk.read_constant(slot);
-                    let name = value.name().unwrap();
+                    let name = chunk.borrow().read_constant(slot).name().unwrap();
                     if let Entry::Occupied(mut e) = self.globals.entry(name) {
                         e.insert(self.stack.last().unwrap().clone());
                     } else {
@@ -194,7 +192,7 @@ impl Vm {
                 OpCode::Equal => {
                     let b = self.stack.pop().unwrap();
                     let a = self.stack.pop().unwrap();
-                    self.stack.push((a == b).into());
+                    self.stack.push(Rc::new((a == b).into()));
                 }
                 OpCode::Greater => comparison_op(&mut self.stack, PartialOrd::gt)?,
                 OpCode::Less => comparison_op(&mut self.stack, PartialOrd::lt)?,
@@ -202,19 +200,19 @@ impl Vm {
                     let a = self.stack.get(self.stack.len() - 2).unwrap().clone();
                     let b = self.stack.last().unwrap().clone();
 
-                    match (a.clone(), b.clone()) {
+                    match (a.as_ref(), b.as_ref()) {
                         (Value::String(a), Value::String(b)) => {
                             self.stack.pop();
                             self.stack.pop();
                             let a = a.replace('"', "");
                             let b = b.replace('"', "");
                             let result = format!("\"{}\"", a + b.as_str());
-                            self.stack.push(result.into());
+                            self.stack.push(Rc::new(result.into()));
                         }
                         (Value::Number(a), Value::Number(b)) => {
                             self.stack.pop();
                             self.stack.pop();
-                            self.stack.push((a + b).into());
+                            self.stack.push(Rc::new((a + b).into()));
                         }
                         _ => {
                             return Err(self.runtime_error(format!(
@@ -228,17 +226,17 @@ impl Vm {
                 OpCode::Divide => binary_op(&mut self.stack, Div::div)?,
                 OpCode::Not => {
                     let bool_val = self.stack.pop().unwrap().is_falsey();
-                    self.stack.push(bool_val.into());
+                    self.stack.push(Rc::new(bool_val.into()));
                 }
                 OpCode::Negate => {
                     // Inspect the value from the stack without popping it first,
                     // in case it's not a number.
                     let value = self.stack.last().unwrap().clone();
 
-                    match value {
+                    match value.as_ref() {
                         Value::Number(value) => {
                             self.stack.pop();
-                            self.stack.push(Value::Number(-value))
+                            self.stack.push(Rc::new(Value::Number(-*value)))
                         }
                         _ => {
                             return Err(self.runtime_error("Operand must be a number."));
@@ -249,7 +247,7 @@ impl Vm {
         }
     }
 
-    fn call(&mut self, function: Function, arg_count: usize) -> Result<()> {
+    fn call(&mut self, function: Rc<Function>, arg_count: usize) -> Result<()> {
         if arg_count > function.arity {
             return Err(self.runtime_error(format!(
                 "Expected {} arguments but got {arg_count}.",
@@ -267,9 +265,9 @@ impl Vm {
         Ok(())
     }
 
-    fn call_value(&mut self, callee: Value, arg_count: usize) -> Result<()> {
-        match callee {
-            Value::Function(function) => self.call(function, arg_count),
+    fn call_value(&mut self, callee: Rc<Value>, arg_count: usize) -> Result<()> {
+        match callee.as_ref() {
+            Value::Function(function) => self.call(Rc::clone(function), arg_count),
             Value::ObjNative(native) => {
                 let stack_len = self.stack.len();
                 let args = &mut self.stack.as_mut_slice()[0..stack_len - arg_count];
@@ -277,7 +275,7 @@ impl Vm {
                 for _ in 0..arg_count + 1 {
                     self.stack.pop();
                 }
-                self.stack.push(result);
+                self.stack.push(Rc::new(result));
                 Ok(())
             }
             _ => Err(self.runtime_error("Can only call functions and classes.")),
@@ -291,7 +289,7 @@ impl Vm {
             let function = &frame.function;
             // -1 because the ip has already moved on to the next instruction
             // but we want the stack trace to point to the previous failed instruction.
-            let line = function.chunk.lines[frame.ip - 1];
+            let line = function.chunk.borrow().lines[frame.ip - 1];
 
             full_msg.push_str(format!("line {line} in ").as_str());
             if let Some(name) = function.name {
@@ -304,11 +302,11 @@ impl Vm {
     }
 
     fn define_native(&mut self, name: &str, function: NativeFn) {
-        let native_fn_val = Value::ObjNative(ObjNative::new(function));
+        let native_fn_val = Rc::new(Value::ObjNative(ObjNative::new(function)));
 
         // Push onto the stack to prevent them from being collected by GC.
-        self.stack.push(Value::String(name.into()));
-        self.stack.push(native_fn_val.clone());
+        self.stack.push(Rc::new(Value::String(name.into())));
+        self.stack.push(Rc::clone(&native_fn_val));
         self.globals.insert(name.into(), native_fn_val);
 
         self.stack.pop();
@@ -316,19 +314,19 @@ impl Vm {
     }
 }
 
-fn binary_op<F>(stack: &mut Vec<Value>, op: F) -> Result<()>
+fn binary_op<F>(stack: &mut Stack, op: F) -> Result<()>
 where
     F: Fn(f64, f64) -> f64,
 {
     let b = stack.last().unwrap().clone();
     let a = stack.get(stack.len() - 2).unwrap().clone();
 
-    match (a, b) {
+    match (a.as_ref(), b.as_ref()) {
         (Value::Number(a), Value::Number(b)) => {
             stack.pop();
             stack.pop();
-            let result = op(a, b);
-            stack.push(result.into());
+            let result = op(*a, *b);
+            stack.push(Rc::new(result.into()));
         }
         _ => {
             // runtime_error();
@@ -340,19 +338,19 @@ where
     Ok(())
 }
 
-fn comparison_op<F>(stack: &mut Vec<Value>, op: F) -> Result<()>
+fn comparison_op<F>(stack: &mut Stack, op: F) -> Result<()>
 where
     F: Fn(&f64, &f64) -> bool,
 {
     let b = stack.last().unwrap().clone();
     let a = stack.get(stack.len() - 2).unwrap().clone();
 
-    match (a, b) {
+    match (a.as_ref(), b.as_ref()) {
         (Value::Number(a), Value::Number(b)) => {
             stack.pop();
             stack.pop();
-            let result = op(&a, &b);
-            stack.push(result.into());
+            let result = op(a, b);
+            stack.push(Rc::new(result.into()));
         }
         _ => {
             return Err(InterpretError::Runtime(
@@ -363,7 +361,7 @@ where
     Ok(())
 }
 
-fn clock_native(_arg_count: usize, _args: &mut [Value]) -> Value {
+fn clock_native(_arg_count: usize, _args: &mut [BoxedValue]) -> Value {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()

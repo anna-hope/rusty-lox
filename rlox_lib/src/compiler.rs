@@ -172,12 +172,8 @@ impl Compiler {
         self.locals.last_mut().unwrap().initialized = true;
     }
 
-    fn chunk(&self) -> &Chunk {
-        &self.function.chunk
-    }
-
-    fn chunk_mut(&mut self) -> &mut Chunk {
-        &mut self.function.chunk
+    fn chunk(&self) -> Rc<RefCell<Chunk>> {
+        Rc::clone(&self.function.chunk)
     }
 }
 
@@ -289,8 +285,8 @@ impl Parser {
 
     fn emit_code(&self, code: OpCode) {
         let previous = self.previous.unwrap();
-        let mut compiler = self.compiler.borrow_mut();
-        compiler.chunk_mut().add_code(code, previous.line);
+        let compiler = self.compiler.borrow();
+        compiler.chunk().borrow_mut().add_code(code, previous.line);
     }
 
     fn emit_codes(&self, code1: OpCode, code2: OpCode) {
@@ -302,15 +298,15 @@ impl Parser {
         // HACK: Subtracting one from the offset because something funky is going on
         // with instruction pointers on the VM side.
         // Ideally, it would be fixed there, but I haven't been able to figure it out.
-        let offset = self.compiler.borrow().chunk().len() - loop_start + 2 - 1;
+        let offset = self.compiler.borrow().chunk().borrow().len() - loop_start + 2 - 1;
         let jump_offset = calculate_jump_offset(offset >> 8 & 0xff, offset & 0xff);
         self.emit_code(OpCode::Loop(jump_offset));
     }
 
     fn emit_jump(&self, instruction: OpCode) -> usize {
         self.emit_code(instruction);
-        let mut compiler = self.compiler.borrow_mut();
-        compiler.chunk_mut().len() - 1
+        let compiler = self.compiler.borrow();
+        compiler.chunk().borrow().len() - 1
     }
 
     fn end_compiler(&mut self) -> Function {
@@ -323,8 +319,8 @@ impl Parser {
 
         if env::var("DEBUG_PRINT_CODE") == Ok("1".to_string()) && !self.had_error {
             let name = function.name.unwrap_or("<script>".into());
-            let mut compiler = self.compiler.borrow_mut();
-            compiler.chunk_mut().disassemble(name.as_str());
+            let compiler = self.compiler.borrow();
+            compiler.chunk().borrow().disassemble(name.as_str());
         }
 
         let maybe_enclosing = self.compiler.borrow().enclosing.as_ref().map(Rc::clone);
@@ -527,9 +523,10 @@ impl Parser {
     }
 
     fn identifier_constant(&self, name: Token) -> usize {
-        let mut compiler = self.compiler.borrow_mut();
+        let compiler = self.compiler.borrow();
         compiler
-            .chunk_mut()
+            .chunk()
+            .borrow_mut()
             .push_constant(Value::Obj(Obj::new(name.value)))
     }
 
@@ -651,7 +648,7 @@ impl Parser {
         self.block();
 
         let function = self.end_compiler();
-        self.emit_constant(function.into());
+        self.emit_constant(Value::Function(function.into()));
     }
 
     fn fun_declaration(&mut self) {
@@ -697,7 +694,7 @@ impl Parser {
 
         let mut loop_start = {
             let compiler = self.compiler.borrow();
-            compiler.chunk().len()
+            compiler.chunk().borrow().len()
         };
 
         let mut exit_jump: Option<usize> = None;
@@ -712,7 +709,7 @@ impl Parser {
 
         if !self.match_token(TokenType::RightParen) {
             let body_jump = self.emit_jump(OpCode::Jump(0xff));
-            let increment_start = { self.compiler.borrow().chunk().len() };
+            let increment_start = { self.compiler.borrow().chunk().borrow().len() };
             self.expression();
             self.emit_code(OpCode::Pop);
             self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
@@ -775,7 +772,7 @@ impl Parser {
     }
 
     fn while_statement(&mut self) {
-        let loop_start = { self.compiler.borrow().chunk().len() };
+        let loop_start = { self.compiler.borrow().chunk().borrow().len() };
         self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
         self.expression();
         self.consume(TokenType::RightParen, "Expect ')' after condition.");
@@ -859,21 +856,23 @@ impl Parser {
 
     fn emit_constant(&self, value: Value) {
         let previous = self.previous.unwrap();
-        let mut compiler = self.compiler.borrow_mut();
-        compiler.chunk_mut().add_constant_code(value, previous.line);
+        let compiler = self.compiler.borrow();
+        compiler
+            .chunk()
+            .borrow_mut()
+            .add_constant_code(value, previous.line);
     }
 
     fn patch_jump(&self, offset: usize) {
-        let mut compiler = self.compiler.borrow_mut();
+        let compiler = self.compiler.borrow();
         // HACK: Ditto about subtracting 1 from the offset.
-        let jump = compiler.chunk().len() - offset - 1;
-        let op = compiler.chunk_mut().codes.get_mut(offset).unwrap();
+        let jump = compiler.chunk().borrow().len() - offset - 1;
 
-        match op {
+        match compiler.chunk().borrow_mut().codes.get_mut(offset).unwrap() {
             OpCode::JumpIfFalse(ref mut offset) | OpCode::Jump(ref mut offset) => {
                 *offset = calculate_jump_offset(jump >> 8 & 0xff, jump & 0xff);
             }
-            _ => panic!("Expected Jump or JumpIfFalse, got {op:?}"),
+            _ => panic!("Expected Jump or JumpIfFalse"),
         }
     }
 }
