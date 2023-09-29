@@ -84,10 +84,12 @@ impl Vm {
         let mut frame = Rc::clone(self.frames.last().unwrap());
         let mut chunk = frame.borrow().function.chunk.clone();
 
+        let trace_execution = env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into());
+
         loop {
             let code = chunk.codes[frame.borrow().ip];
 
-            if env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into()) {
+            if trace_execution {
                 println!("          ");
                 for slot in self.stack.iter() {
                     println!("[ {slot:?} ]");
