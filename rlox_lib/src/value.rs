@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::fmt;
+use std::fmt::Formatter;
 use std::rc::Rc;
 
 use ustr::Ustr;
@@ -20,7 +21,7 @@ impl Obj {
 }
 
 impl fmt::Display for Obj {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let name = if let Some(name) = self.name {
             name
         } else {
@@ -50,7 +51,7 @@ impl Function {
 }
 
 impl fmt::Display for Function {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let string = if let Some(name) = self.name {
             name.to_string()
         } else {
@@ -79,6 +80,27 @@ impl ObjNative {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ObjClosure {
+    pub obj: Obj,
+    pub function: Function,
+}
+
+impl ObjClosure {
+    pub fn new(function: Function) -> Self {
+        Self {
+            obj: Obj::default(),
+            function,
+        }
+    }
+}
+
+impl fmt::Display for ObjClosure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.function)
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub(crate) enum Value {
     Bool(bool),
@@ -87,8 +109,8 @@ pub(crate) enum Value {
     Number(f64),
     String(Ustr),
     Obj(Obj),
-    Function(Rc<Function>),
     ObjNative(ObjNative),
+    Closure(Rc<ObjClosure>),
 }
 
 impl Value {
@@ -103,22 +125,22 @@ impl Value {
     pub fn name(&self) -> Option<Ustr> {
         match self {
             Self::Obj(obj) => obj.name,
-            Self::Function(function) => function.name,
+            Self::Closure(closure) => closure.function.name,
             _ => None,
         }
     }
 }
 
 impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let string = match self {
             Self::Number(value) => value.to_string(),
             Self::Bool(value) => value.to_string(),
             Self::Nil => "nil".to_string(),
             Self::String(string) => string.to_owned(),
             Self::Obj(value) => value.to_string(),
-            Self::Function(function) => function.to_string(),
             Self::ObjNative(_) => "<native fn>".to_string(),
+            Self::Closure(closure) => closure.to_string(),
         };
         write!(f, "{string}")
     }
@@ -145,11 +167,5 @@ impl From<String> for Value {
 impl From<Ustr> for Value {
     fn from(value: Ustr) -> Self {
         Self::String(value)
-    }
-}
-
-impl From<Rc<Function>> for Value {
-    fn from(value: Rc<Function>) -> Self {
-        Self::Function(value)
     }
 }

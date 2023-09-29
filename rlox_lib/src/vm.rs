@@ -9,7 +9,7 @@ use fnv::FnvHashMap;
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::value::{Function, NativeFn, ObjNative};
+use crate::value::{NativeFn, ObjClosure, ObjNative};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
@@ -34,15 +34,15 @@ pub enum InterpretError {
 
 #[derive(Debug)]
 struct CallFrame {
-    function: Rc<Function>,
+    closure: Rc<ObjClosure>,
     ip: usize,
     stack_offset: usize,
 }
 
 impl CallFrame {
-    fn new(function: Rc<Function>, stack_offset: usize) -> Self {
+    fn new(closure: Rc<ObjClosure>, stack_offset: usize) -> Self {
         Self {
-            function,
+            closure,
             ip: 0,
             stack_offset,
         }
@@ -75,17 +75,18 @@ impl Vm {
 
     pub fn interpret(&mut self, source: String) -> Result<()> {
         let mut parser = Parser::new(source);
-        let function = Rc::new(parser.compile()?);
+        let function = parser.compile()?;
+        let closure = Rc::new(ObjClosure::new(function));
         self.stack
-            .push(Rc::new(Value::Function(Rc::clone(&function))));
+            .push(Rc::new(Value::Closure(Rc::clone(&closure))));
 
-        self.call(function, 0).unwrap();
+        self.call(closure, 0).unwrap();
         self.run()
     }
 
     fn run(&mut self) -> Result<()> {
         let mut frame = Rc::clone(self.frames.last().unwrap());
-        let mut chunk = Rc::clone(&frame.borrow().function.chunk);
+        let mut chunk = Rc::clone(&frame.borrow().closure.function.chunk);
 
         let trace_execution = env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into());
 
@@ -127,7 +128,11 @@ impl Vm {
                     };
                     self.call_value(callee, arg_count)?;
                     frame = Rc::clone(self.frames.last().unwrap());
-                    chunk = frame.borrow().function.chunk.clone();
+                    chunk = Rc::clone(&frame.borrow().closure.function.chunk);
+                }
+                OpCode::Closure(index) => {
+                    let closure = chunk.borrow().read_constant(index).clone();
+                    self.stack.push(Rc::new(closure));
                 }
                 OpCode::Return => {
                     let result = self.stack.pop().unwrap();
@@ -139,7 +144,7 @@ impl Vm {
                     self.stack.truncate(frame.borrow().stack_offset);
                     self.stack.push(result);
                     frame = Rc::clone(self.frames.last().unwrap());
-                    chunk = frame.borrow().function.chunk.clone();
+                    chunk = Rc::clone(&frame.borrow().closure.function.chunk);
                 }
                 OpCode::Constant(index) => {
                     let constant = chunk.borrow().read_constant(index).clone();
@@ -249,11 +254,11 @@ impl Vm {
         }
     }
 
-    fn call(&mut self, function: Rc<Function>, arg_count: usize) -> Result<()> {
-        if arg_count > function.arity {
+    fn call(&mut self, closure: Rc<ObjClosure>, arg_count: usize) -> Result<()> {
+        if arg_count > closure.function.arity {
             return Err(self.runtime_error(format!(
                 "Expected {} arguments but got {arg_count}.",
-                function.arity
+                closure.function.arity
             )));
         }
 
@@ -262,14 +267,14 @@ impl Vm {
         }
 
         let stack_offset = self.stack.len() - arg_count - 1;
-        let frame = Rc::new(RefCell::new(CallFrame::new(function, stack_offset)));
+        let frame = Rc::new(RefCell::new(CallFrame::new(closure, stack_offset)));
         self.frames.push(frame);
         Ok(())
     }
 
     fn call_value(&mut self, callee: Rc<Value>, arg_count: usize) -> Result<()> {
         match callee.as_ref() {
-            Value::Function(function) => self.call(Rc::clone(function), arg_count),
+            Value::Closure(closure) => self.call(Rc::clone(closure), arg_count),
             Value::ObjNative(native) => {
                 let stack_len = self.stack.len();
                 let args = &mut self.stack.as_mut_slice()[stack_len - arg_count..stack_len];
@@ -294,7 +299,7 @@ impl Vm {
         let mut full_msg = format!("{msg}\n");
         for frame in self.frames.iter() {
             let frame = frame.borrow();
-            let function = &frame.function;
+            let function = &frame.closure.function;
             // -1 because the ip has already moved on to the next instruction
             // but we want the stack trace to point to the previous failed instruction.
             let line = function.chunk.borrow().lines[frame.ip - 1];

@@ -9,7 +9,7 @@ use ustr::Ustr;
 use crate::chunk::OpCode::Divide;
 use crate::chunk::{Chunk, OpCode};
 use crate::scanner::{Scanner, Token, TokenType};
-use crate::value::{Function, Obj, Value};
+use crate::value::{Function, Obj, ObjClosure, Value};
 
 type BoxedCompiler = Rc<RefCell<Compiler>>;
 
@@ -648,7 +648,7 @@ impl Parser {
         self.block();
 
         let function = self.end_compiler();
-        self.emit_constant(Value::Function(function.into()));
+        self.emit_closure(Value::Closure(Rc::new(ObjClosure::new(function))));
     }
 
     fn fun_declaration(&mut self) {
@@ -861,6 +861,15 @@ impl Parser {
             .chunk()
             .borrow_mut()
             .add_constant_code(value, previous.line);
+    }
+
+    fn emit_closure(&self, value: Value) {
+        let previous = self.previous.unwrap();
+        let compiler = self.compiler.borrow();
+        compiler
+            .chunk()
+            .borrow_mut()
+            .add_closure(value, previous.line);
     }
 
     fn patch_jump(&self, offset: usize) {

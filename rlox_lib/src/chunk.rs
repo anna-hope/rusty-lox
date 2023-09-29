@@ -30,6 +30,7 @@ pub enum OpCode {
     JumpIfFalse(JumpOffset),
     Loop(JumpOffset),
     Call(usize),
+    Closure(usize),
     Return,
 }
 
@@ -94,6 +95,11 @@ impl Chunk {
         self.add_code(OpCode::Constant(index), line);
     }
 
+    pub fn add_closure(&mut self, value: Value, line: usize) {
+        let index = self.push_constant(value);
+        self.add_code(OpCode::Closure(index), line);
+    }
+
     pub fn read_constant(&self, index: usize) -> &Value {
         &self.constants[index]
     }
@@ -111,7 +117,8 @@ impl Chunk {
             OpCode::Constant(index)
             | OpCode::DefineGlobal(index)
             | OpCode::GetGlobal(index)
-            | OpCode::SetGlobal(index) => {
+            | OpCode::SetGlobal(index)
+            | OpCode::Closure(index) => {
                 let value = &self.constants[index];
                 println!("{instruction:-16} {index:4} '{value:?}'");
             }
