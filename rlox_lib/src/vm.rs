@@ -13,7 +13,7 @@ use crate::value::{Function, NativeFn, ObjNative};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
-    value::{BoxedValue, Value},
+    value::{BoxedValue, NativeFnResult, Value},
 };
 
 const FRAMES_MAX: usize = 64;
@@ -67,7 +67,9 @@ impl Vm {
             stack,
             globals: FnvHashMap::default(),
         };
+
         vm.define_native("clock", clock_native);
+        vm.define_native("refcount", refcount_native);
         vm
     }
 
@@ -271,12 +273,18 @@ impl Vm {
             Value::ObjNative(native) => {
                 let stack_len = self.stack.len();
                 let args = &mut self.stack.as_mut_slice()[stack_len - arg_count..stack_len];
-                let result = (native.function)(arg_count, args);
-                for _ in 0..arg_count + 1 {
-                    self.stack.pop();
+                match (native.function)(args) {
+                    Ok(result) => {
+                        for _ in 0..arg_count + 1 {
+                            self.stack.pop();
+                        }
+                        if let Some(result_value) = result {
+                            self.stack.push(Rc::new(result_value))
+                        }
+                        Ok(())
+                    }
+                    Err(error) => Err(self.runtime_error(error.to_string())),
                 }
-                self.stack.push(Rc::new(result));
-                Ok(())
             }
             _ => Err(self.runtime_error("Can only call functions and classes.")),
         }
@@ -361,12 +369,23 @@ where
     Ok(())
 }
 
-fn clock_native(_arg_count: usize, _args: &mut [BoxedValue]) -> Value {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
-        .into()
+fn clock_native(_args: &mut [BoxedValue]) -> NativeFnResult {
+    Ok(Some(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            .into(),
+    ))
+}
+
+fn refcount_native(args: &mut [BoxedValue]) -> NativeFnResult {
+    if let Some(value) = args.get(0) {
+        let strong_count = u32::try_from(Rc::strong_count(value))?;
+        Ok(Some(f64::from(strong_count).into()))
+    } else {
+        Err("This function takes one argument".into())
+    }
 }
 
 // #[cfg(test)]

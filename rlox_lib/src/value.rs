@@ -60,7 +60,9 @@ impl fmt::Display for Function {
     }
 }
 
-pub type NativeFn = fn(arg_count: usize, args: &mut [BoxedValue]) -> Value;
+pub(crate) type NativeFnResult = Result<Option<Value>, Box<dyn std::error::Error>>;
+
+pub type NativeFn = fn(args: &mut [BoxedValue]) -> NativeFnResult;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjNative {
