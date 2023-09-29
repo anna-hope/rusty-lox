@@ -8,5 +8,6 @@ edition = "2021"
 [dependencies]
 fnv = "1"
 lazy_static = "1.4.0"
+mimalloc = "0.1.39"
 thiserror = "1"
 ustr = "0.10.0"
