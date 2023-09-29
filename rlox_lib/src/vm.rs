@@ -270,7 +270,7 @@ impl Vm {
             Value::Function(function) => self.call(Rc::clone(function), arg_count),
             Value::ObjNative(native) => {
                 let stack_len = self.stack.len();
-                let args = &mut self.stack.as_mut_slice()[0..stack_len - arg_count];
+                let args = &mut self.stack.as_mut_slice()[stack_len - arg_count..stack_len];
                 let result = (native.function)(arg_count, args);
                 for _ in 0..arg_count + 1 {
                     self.stack.pop();
