@@ -9,7 +9,7 @@ use fnv::FnvHashMap;
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::value::{NativeFn, ObjClosure, ObjNative};
+use crate::value::{NativeFn, ObjClosure, ObjNative, ObjUpvalue};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
@@ -34,13 +34,13 @@ pub enum InterpretError {
 
 #[derive(Debug)]
 struct CallFrame {
-    closure: Rc<ObjClosure>,
+    closure: Rc<RefCell<ObjClosure>>,
     ip: usize,
     stack_offset: usize,
 }
 
 impl CallFrame {
-    fn new(closure: Rc<ObjClosure>, stack_offset: usize) -> Self {
+    fn new(closure: Rc<RefCell<ObjClosure>>, stack_offset: usize) -> Self {
         Self {
             closure,
             ip: 0,
@@ -76,7 +76,7 @@ impl Vm {
     pub fn interpret(&mut self, source: String) -> Result<()> {
         let mut parser = Parser::new(source);
         let function = parser.compile()?;
-        let closure = Rc::new(ObjClosure::new(function));
+        let closure = Rc::new(RefCell::new(ObjClosure::new(function)));
         self.stack
             .push(Rc::new(Value::Closure(Rc::clone(&closure))));
 
@@ -86,7 +86,7 @@ impl Vm {
 
     fn run(&mut self) -> Result<()> {
         let mut frame = Rc::clone(self.frames.last().unwrap());
-        let mut chunk = Rc::clone(&frame.borrow().closure.function.chunk);
+        let mut chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
 
         let trace_execution = env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into());
 
@@ -119,21 +119,50 @@ impl Vm {
                     frame.borrow_mut().ip -= offset;
                 }
                 OpCode::Call(arg_count) => {
-                    let callee = {
-                        // Go past the function arguments to get the function Value from the stack.
-                        self.stack
-                            .get(self.stack.len() - arg_count - 1)
-                            .unwrap()
-                            .clone()
-                    };
+                    // Go past the function arguments to get the function Value from the stack.
+                    let callee = Rc::clone(&self.stack[self.stack.len() - arg_count - 1]);
                     self.call_value(callee, arg_count)?;
                     frame = Rc::clone(self.frames.last().unwrap());
-                    chunk = Rc::clone(&frame.borrow().closure.function.chunk);
+                    chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
                 }
-                OpCode::Closure(index) => {
-                    let closure = chunk.borrow().read_constant(index).clone();
-                    self.stack.push(Rc::new(closure));
+                OpCode::Closure(index, upvalue_count) => {
+                    let value = Rc::new(chunk.borrow().read_constant(index).clone());
+                    self.stack.push(Rc::clone(&value));
+
+                    let mut upvalues = vec![];
+                    for _ in 0..upvalue_count {
+                        let opcode = chunk.borrow().codes[frame.borrow().ip];
+                        match opcode {
+                            OpCode::Upvalue(upvalue) => {
+                                upvalues.push(upvalue);
+                                frame.borrow_mut().ip += 1;
+                            }
+                            _ => panic!("Expected Upvalue, got {opcode:?}"),
+                        }
+                    }
+
+                    match value.as_ref() {
+                        Value::Closure(closure) => {
+                            for upvalue in upvalues {
+                                if upvalue.is_local {
+                                    let value = Rc::clone(
+                                        &self.stack[frame.borrow().stack_offset + upvalue.index],
+                                    );
+                                    closure
+                                        .borrow_mut()
+                                        .upvalues
+                                        .push(Rc::new(RefCell::new(Self::capture_upvalue(value))));
+                                } else {
+                                    closure.borrow_mut().upvalues.push(Rc::clone(
+                                        &frame.borrow().closure.borrow().upvalues[index],
+                                    ));
+                                }
+                            }
+                        }
+                        _ => panic!("Expected Closure, got {value:?}"),
+                    }
                 }
+                OpCode::Upvalue(_) => unreachable!(),
                 OpCode::Return => {
                     let result = self.stack.pop().unwrap();
                     self.frames.pop();
@@ -144,7 +173,7 @@ impl Vm {
                     self.stack.truncate(frame.borrow().stack_offset);
                     self.stack.push(result);
                     frame = Rc::clone(self.frames.last().unwrap());
-                    chunk = Rc::clone(&frame.borrow().closure.function.chunk);
+                    chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
                 }
                 OpCode::Constant(index) => {
                     let constant = chunk.borrow().read_constant(index).clone();
@@ -171,13 +200,13 @@ impl Vm {
                     let slot = slot + frame.borrow().stack_offset;
                     // Have to add 1 to the slot with offset here because
                     // reasons.
-                    let value = self.stack.get(slot + 1).unwrap().clone();
+                    let value = Rc::clone(&self.stack[slot + 1]);
                     self.stack[slot] = value;
                 }
                 OpCode::GetGlobal(slot) => {
                     let name = chunk.borrow().read_constant(slot).name().unwrap();
                     if let Some(variable) = self.globals.get(&name) {
-                        self.stack.push(variable.clone());
+                        self.stack.push(Rc::clone(variable));
                     } else {
                         return Err(self.runtime_error(format!("Undefined variable: {name}")));
                     }
@@ -195,6 +224,20 @@ impl Vm {
                     } else {
                         return Err(self.runtime_error(format!("Undefined variable '{name}'")));
                     }
+                }
+                OpCode::GetUpvalue(slot) => {
+                    let value = Rc::clone(
+                        &frame.borrow().closure.borrow().upvalues[slot]
+                            .borrow()
+                            .location,
+                    );
+                    self.stack.push(value);
+                }
+                OpCode::SetUpvalue(slot) => {
+                    let value = Rc::clone(self.stack.last().unwrap());
+                    frame.borrow().closure.borrow().upvalues[slot]
+                        .borrow_mut()
+                        .location = value;
                 }
                 OpCode::Equal => {
                     let b = self.stack.pop().unwrap();
@@ -254,12 +297,12 @@ impl Vm {
         }
     }
 
-    fn call(&mut self, closure: Rc<ObjClosure>, arg_count: usize) -> Result<()> {
-        if arg_count > closure.function.arity {
-            return Err(self.runtime_error(format!(
-                "Expected {} arguments but got {arg_count}.",
-                closure.function.arity
-            )));
+    fn call(&mut self, closure: Rc<RefCell<ObjClosure>>, arg_count: usize) -> Result<()> {
+        let arity = closure.borrow().function.arity;
+        if arg_count > arity {
+            return Err(
+                self.runtime_error(format!("Expected {} arguments but got {arg_count}.", arity))
+            );
         }
 
         if self.frames.len() == FRAMES_MAX {
@@ -295,11 +338,15 @@ impl Vm {
         }
     }
 
+    fn capture_upvalue(local: BoxedValue) -> ObjUpvalue {
+        ObjUpvalue::new(local)
+    }
+
     fn runtime_error(&self, msg: impl fmt::Display) -> InterpretError {
         let mut full_msg = format!("{msg}\n");
         for frame in self.frames.iter() {
             let frame = frame.borrow();
-            let function = &frame.closure.function;
+            let function = &frame.closure.borrow().function;
             // -1 because the ip has already moved on to the next instruction
             // but we want the stack trace to point to the previous failed instruction.
             let line = function.chunk.borrow().lines[frame.ip - 1];

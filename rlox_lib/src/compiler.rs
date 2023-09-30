@@ -7,7 +7,7 @@ use thiserror::Error;
 use ustr::Ustr;
 
 use crate::chunk::OpCode::Divide;
-use crate::chunk::{Chunk, OpCode};
+use crate::chunk::{Chunk, OpCode, Upvalue};
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::{Function, Obj, ObjClosure, Value};
 
@@ -120,6 +120,7 @@ struct Compiler {
     function: Function,
     function_type: FunctionType,
     locals: Vec<Local>,
+    upvalues: Vec<Upvalue>,
     scope_depth: usize,
 }
 
@@ -137,6 +138,7 @@ impl Compiler {
             function: Function::new(function_name),
             function_type,
             locals,
+            upvalues: Vec::with_capacity(u8::MAX.into()),
             scope_depth: 0,
         }
     }
@@ -162,6 +164,35 @@ impl Compiler {
             }
         }
         Ok(None)
+    }
+
+    fn add_upvalue(&mut self, index: usize, is_local: bool) -> usize {
+        for (n, upvalue) in self.upvalues.iter().enumerate() {
+            if upvalue.index == index && upvalue.is_local == is_local {
+                return n;
+            }
+        }
+
+        self.upvalues.push(Upvalue { index, is_local });
+        self.function.upvalue_count += 1;
+
+        self.upvalues.len() - 1
+    }
+
+    fn resolve_upvalue(&mut self, name: Token) -> Option<usize> {
+        if let Some(enclosing) = &self.enclosing {
+            let maybe_local_index = enclosing.borrow().resolve_local(name).unwrap();
+            if let Some(local_index) = maybe_local_index {
+                Some(self.add_upvalue(local_index, true))
+            } else {
+                enclosing
+                    .borrow_mut()
+                    .resolve_upvalue(name)
+                    .map(|upvalue| enclosing.borrow_mut().add_upvalue(upvalue, false))
+            }
+        } else {
+            None
+        }
     }
 
     fn mark_last_local_initialized(&mut self) {
@@ -433,8 +464,13 @@ impl Parser {
                 let (get_op, set_op) = if let Some(arg) = maybe_arg {
                     (OpCode::GetLocal(arg), OpCode::SetLocal(arg))
                 } else {
-                    let arg = self.identifier_constant(name);
-                    (OpCode::GetGlobal(arg), OpCode::SetGlobal(arg))
+                    let maybe_arg = { self.compiler.borrow_mut().resolve_upvalue(name) };
+                    if let Some(arg) = maybe_arg {
+                        (OpCode::GetUpvalue(arg), OpCode::SetUpvalue(arg))
+                    } else {
+                        let arg = self.identifier_constant(name);
+                        (OpCode::GetGlobal(arg), OpCode::SetGlobal(arg))
+                    }
                 };
 
                 if can_assign && self.match_token(TokenType::Equal) {
@@ -619,7 +655,7 @@ impl Parser {
             function_type,
             Some(function_name),
         )));
-        self.compiler = compiler;
+        self.compiler = Rc::clone(&compiler);
         self.begin_scope();
 
         self.consume(TokenType::LeftParen, "Expect '(' after function name.");
@@ -648,7 +684,12 @@ impl Parser {
         self.block();
 
         let function = self.end_compiler();
-        self.emit_closure(Value::Closure(Rc::new(ObjClosure::new(function))));
+        let upvalues = &compiler.borrow().upvalues;
+
+        self.emit_closure(
+            Value::Closure(Rc::new(RefCell::new(ObjClosure::new(function)))),
+            upvalues,
+        );
     }
 
     fn fun_declaration(&mut self) {
@@ -863,13 +904,13 @@ impl Parser {
             .add_constant_code(value, previous.line);
     }
 
-    fn emit_closure(&self, value: Value) {
+    fn emit_closure(&self, value: Value, upvalues: &[Upvalue]) {
         let previous = self.previous.unwrap();
         let compiler = self.compiler.borrow();
         compiler
             .chunk()
             .borrow_mut()
-            .add_closure(value, previous.line);
+            .add_closure(value, previous.line, upvalues);
     }
 
     fn patch_jump(&self, offset: usize) {

@@ -37,6 +37,7 @@ pub(crate) struct Function {
     pub arity: usize,
     pub chunk: Rc<RefCell<Chunk>>,
     pub name: Option<Ustr>,
+    pub upvalue_count: usize,
 }
 
 impl Function {
@@ -46,6 +47,7 @@ impl Function {
             arity: 0,
             name,
             chunk: Rc::new(RefCell::new(Chunk::new())),
+            upvalue_count: 0,
         }
     }
 }
@@ -84,13 +86,16 @@ impl ObjNative {
 pub(crate) struct ObjClosure {
     pub obj: Obj,
     pub function: Function,
+    pub upvalues: Vec<Rc<RefCell<ObjUpvalue>>>,
 }
 
 impl ObjClosure {
     pub fn new(function: Function) -> Self {
+        let upvalue_count = function.upvalue_count;
         Self {
             obj: Obj::default(),
             function,
+            upvalues: Vec::with_capacity(upvalue_count),
         }
     }
 }
@@ -98,6 +103,21 @@ impl ObjClosure {
 impl fmt::Display for ObjClosure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.function)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ObjUpvalue {
+    pub obj: Obj,
+    pub location: BoxedValue,
+}
+
+impl ObjUpvalue {
+    pub fn new(slot: BoxedValue) -> Self {
+        Self {
+            obj: Obj::default(),
+            location: slot,
+        }
     }
 }
 
@@ -110,7 +130,8 @@ pub(crate) enum Value {
     String(Ustr),
     Obj(Obj),
     ObjNative(ObjNative),
-    Closure(Rc<ObjClosure>),
+    Closure(Rc<RefCell<ObjClosure>>),
+    Upvalue(ObjUpvalue),
 }
 
 impl Value {
@@ -125,7 +146,7 @@ impl Value {
     pub fn name(&self) -> Option<Ustr> {
         match self {
             Self::Obj(obj) => obj.name,
-            Self::Closure(closure) => closure.function.name,
+            Self::Closure(closure) => closure.borrow().function.name,
             _ => None,
         }
     }
@@ -140,7 +161,8 @@ impl fmt::Display for Value {
             Self::String(string) => string.to_owned(),
             Self::Obj(value) => value.to_string(),
             Self::ObjNative(_) => "<native fn>".to_string(),
-            Self::Closure(closure) => closure.to_string(),
+            Self::Closure(closure) => closure.borrow().to_string(),
+            Self::Upvalue(_) => "upvalue".to_string(),
         };
         write!(f, "{string}")
     }

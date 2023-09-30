@@ -1,11 +1,18 @@
-use crate::value::Value;
 use std::fmt::{Display, Formatter};
+
+use crate::value::Value;
 
 type JumpOffset = usize;
 type StackSlot = usize;
 
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub(crate) struct Upvalue {
+    pub index: usize,
+    pub is_local: bool,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub enum OpCode {
+pub(crate) enum OpCode {
     Constant(usize),
     Nil,
     True,
@@ -16,6 +23,8 @@ pub enum OpCode {
     GetGlobal(StackSlot),
     DefineGlobal(StackSlot),
     SetGlobal(StackSlot),
+    GetUpvalue(StackSlot),
+    SetUpvalue(StackSlot),
     Equal,
     Greater,
     Less,
@@ -30,7 +39,8 @@ pub enum OpCode {
     JumpIfFalse(JumpOffset),
     Loop(JumpOffset),
     Call(usize),
-    Closure(usize),
+    Closure(usize, usize),
+    Upvalue(Upvalue),
     Return,
 }
 
@@ -95,9 +105,12 @@ impl Chunk {
         self.add_code(OpCode::Constant(index), line);
     }
 
-    pub fn add_closure(&mut self, value: Value, line: usize) {
+    pub fn add_closure(&mut self, value: Value, line: usize, upvalues: &[Upvalue]) {
         let index = self.push_constant(value);
-        self.add_code(OpCode::Closure(index), line);
+        self.add_code(OpCode::Closure(index, upvalues.len()), line);
+        for upvalue in upvalues {
+            self.add_code(OpCode::Upvalue(*upvalue), line);
+        }
     }
 
     pub fn read_constant(&self, index: usize) -> &Value {
@@ -117,10 +130,19 @@ impl Chunk {
             OpCode::Constant(index)
             | OpCode::DefineGlobal(index)
             | OpCode::GetGlobal(index)
-            | OpCode::SetGlobal(index)
-            | OpCode::Closure(index) => {
+            | OpCode::SetGlobal(index) => {
                 let value = &self.constants[index];
                 println!("{instruction:-16} {index:4} '{value:?}'");
+            }
+            OpCode::GetUpvalue(index) | OpCode::SetUpvalue(index) => {
+                println!("{instruction:-16} {index:4}");
+            }
+            OpCode::Closure(index, upvalue_count) => {
+                let function = &self.constants[index];
+                println!("{instruction:-16} {function:4} {upvalue_count:4} upvalues");
+            }
+            OpCode::Upvalue(upvalue) => {
+                println!("{instruction:-16} {upvalue:?}");
             }
             OpCode::GetLocal(index) | OpCode::SetLocal(index) => {
                 println!("{instruction:-16} {index:4}");
@@ -160,36 +182,5 @@ impl Chunk {
 impl Default for Chunk {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl<'iterator> IntoIterator for &'iterator Chunk {
-    type Item = OpCode;
-    type IntoIter = ChunkIterator<'iterator>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        ChunkIterator {
-            codes: &self.codes,
-            index: 0,
-        }
-    }
-}
-
-pub struct ChunkIterator<'a> {
-    codes: &'a Vec<OpCode>,
-    index: usize,
-}
-
-impl<'a> Iterator for ChunkIterator<'a> {
-    type Item = OpCode;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.codes.len() {
-            let code = self.codes[self.index];
-            self.index += 1;
-            Some(code)
-        } else {
-            None
-        }
     }
 }
