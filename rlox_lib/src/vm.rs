@@ -9,7 +9,7 @@ use fnv::FnvHashMap;
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::value::{NativeFn, ObjClosure, ObjNative, ObjUpvalue};
+use crate::value::{BoxedObjUpvalue, NativeFn, ObjClosure, ObjNative, ObjUpvalue};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
@@ -54,6 +54,7 @@ pub struct Vm {
     frames: Vec<Rc<RefCell<CallFrame>>>,
     stack: Stack,
     globals: FnvHashMap<Ustr, BoxedValue>,
+    head_open_upvalue: Option<BoxedObjUpvalue>,
 }
 
 impl Vm {
@@ -66,6 +67,7 @@ impl Vm {
             frames: Vec::with_capacity(FRAMES_MAX),
             stack,
             globals: FnvHashMap::default(),
+            head_open_upvalue: None,
         };
 
         vm.define_native("clock", clock_native);
@@ -151,7 +153,7 @@ impl Vm {
                                     closure
                                         .borrow_mut()
                                         .upvalues
-                                        .push(Rc::new(RefCell::new(Self::capture_upvalue(value))));
+                                        .push(self.capture_upvalue(value));
                                 } else {
                                     closure.borrow_mut().upvalues.push(Rc::clone(
                                         &frame.borrow().closure.borrow().upvalues[index],
@@ -163,8 +165,19 @@ impl Vm {
                     }
                 }
                 OpCode::Upvalue(_) => unreachable!(),
+                OpCode::CloseUpvalue => {
+                    self.close_upvalues(self.stack.last().cloned().unwrap());
+                    self.stack.pop();
+                }
                 OpCode::Return => {
                     let result = self.stack.pop().unwrap();
+                    let value = self
+                        .stack
+                        .get(frame.borrow().stack_offset)
+                        .cloned()
+                        .unwrap();
+                    self.close_upvalues(value);
+
                     self.frames.pop();
                     if self.frames.is_empty() {
                         self.stack.pop();
@@ -338,8 +351,81 @@ impl Vm {
         }
     }
 
-    fn capture_upvalue(local: BoxedValue) -> ObjUpvalue {
-        ObjUpvalue::new(local)
+    fn capture_upvalue(&mut self, local: BoxedValue) -> BoxedObjUpvalue {
+        let mut prev_upvalue: Option<BoxedObjUpvalue> = None;
+        let mut upvalue = self.head_open_upvalue.as_ref().cloned();
+
+        while upvalue
+            .as_ref()
+            .cloned()
+            .is_some_and(|x| Rc::as_ptr(&x.borrow().location) > Rc::as_ptr(&local))
+        {
+            prev_upvalue = upvalue.as_ref().cloned();
+            upvalue = upvalue.unwrap().borrow().next.as_ref().cloned();
+        }
+
+        if let Some(this_upvalue) = upvalue.as_ref().cloned() {
+            if this_upvalue.borrow().location == local {
+                return this_upvalue;
+            }
+        }
+
+        let mut created_upvalue = ObjUpvalue::new(local);
+        created_upvalue.next = upvalue;
+        let created_upvalue = Rc::new(RefCell::new(created_upvalue));
+
+        if let Some(prev_upvalue) = prev_upvalue {
+            prev_upvalue.borrow_mut().next = Some(Rc::clone(&created_upvalue));
+        } else {
+            self.head_open_upvalue = Some(Rc::clone(&created_upvalue));
+        }
+
+        created_upvalue
+    }
+
+    // fn capture_upvalue(&mut self, local: BoxedValue) -> BoxedObjUpvalue {
+    //     let mut upvalue: Option<BoxedObjUpvalue> = None;
+    //     let mut insert_index: Option<usize> = None;
+    //
+    //     for (index, this_upvalue) in self.open_upvalues.iter().enumerate() {
+    //         if Rc::as_ptr(&this_upvalue.borrow().location) <= Rc::as_ptr(&local) {
+    //             break;
+    //         }
+    //
+    //         upvalue = Some(Rc::clone(this_upvalue));
+    //         insert_index = Some(index);
+    //     }
+    //
+    //     println!("{local}");
+    //     dbg!(&self.open_upvalues);
+    //     if let Some(upvalue) = upvalue {
+    //         if upvalue.borrow().location == local {
+    //             return upvalue;
+    //         }
+    //     }
+    //
+    //     let created_upvalue = Rc::new(RefCell::new(ObjUpvalue::new(local)));
+    //
+    //     let index = insert_index.unwrap_or_default();
+    //     self.open_upvalues
+    //         .insert(index, Rc::clone(&created_upvalue));
+    //
+    //     created_upvalue
+    // }
+
+    fn close_upvalues(&mut self, last: BoxedValue) {
+        while self
+            .head_open_upvalue
+            .as_ref()
+            .cloned()
+            .is_some_and(|x| Rc::as_ptr(&x.borrow().location) >= Rc::as_ptr(&last))
+        {
+            let upvalue = self.head_open_upvalue.as_ref().cloned().unwrap();
+            let mut upvalue = upvalue.borrow_mut();
+            upvalue.closed = Rc::clone(&upvalue.location);
+            upvalue.location = Rc::clone(&upvalue.closed);
+            self.head_open_upvalue = upvalue.next.as_ref().cloned();
+        }
     }
 
     fn runtime_error(&self, msg: impl fmt::Display) -> InterpretError {
@@ -432,7 +518,7 @@ fn clock_native(_args: &mut [BoxedValue]) -> NativeFnResult {
 }
 
 fn refcount_native(args: &mut [BoxedValue]) -> NativeFnResult {
-    if let Some(value) = args.get(0) {
+    if let Some(value) = args.first() {
         let strong_count = u32::try_from(Rc::strong_count(value))?;
         Ok(Some(f64::from(strong_count).into()))
     } else {

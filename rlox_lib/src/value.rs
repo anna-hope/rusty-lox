@@ -86,7 +86,7 @@ impl ObjNative {
 pub(crate) struct ObjClosure {
     pub obj: Obj,
     pub function: Function,
-    pub upvalues: Vec<Rc<RefCell<ObjUpvalue>>>,
+    pub upvalues: Vec<BoxedObjUpvalue>,
 }
 
 impl ObjClosure {
@@ -106,10 +106,14 @@ impl fmt::Display for ObjClosure {
     }
 }
 
+pub(crate) type BoxedObjUpvalue = Rc<RefCell<ObjUpvalue>>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ObjUpvalue {
     pub obj: Obj,
     pub location: BoxedValue,
+    pub next: Option<BoxedObjUpvalue>,
+    pub closed: BoxedValue,
 }
 
 impl ObjUpvalue {
@@ -117,6 +121,8 @@ impl ObjUpvalue {
         Self {
             obj: Obj::default(),
             location: slot,
+            next: None,
+            closed: Rc::new(Value::Nil),
         }
     }
 }
@@ -131,7 +137,6 @@ pub(crate) enum Value {
     Obj(Obj),
     ObjNative(ObjNative),
     Closure(Rc<RefCell<ObjClosure>>),
-    Upvalue(ObjUpvalue),
 }
 
 impl Value {
@@ -162,7 +167,6 @@ impl fmt::Display for Value {
             Self::Obj(value) => value.to_string(),
             Self::ObjNative(_) => "<native fn>".to_string(),
             Self::Closure(closure) => closure.borrow().to_string(),
-            Self::Upvalue(_) => "upvalue".to_string(),
         };
         write!(f, "{string}")
     }

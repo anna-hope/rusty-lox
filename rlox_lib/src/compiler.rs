@@ -95,6 +95,7 @@ struct Local {
     name: Token,
     depth: usize,
     initialized: bool,
+    is_captured: bool,
 }
 
 impl Local {
@@ -103,6 +104,7 @@ impl Local {
             name,
             depth,
             initialized: false,
+            is_captured: false,
         }
     }
 }
@@ -183,6 +185,7 @@ impl Compiler {
         if let Some(enclosing) = &self.enclosing {
             let maybe_local_index = enclosing.borrow().resolve_local(name).unwrap();
             if let Some(local_index) = maybe_local_index {
+                enclosing.borrow_mut().locals[local_index].is_captured = true;
                 Some(self.add_upvalue(local_index, true))
             } else {
                 enclosing
@@ -367,25 +370,29 @@ impl Parser {
     }
 
     fn end_scope(&self) {
-        let num_pops = {
+        let op_codes = {
             let mut compiler = self.compiler.borrow_mut();
             compiler.scope_depth -= 1;
 
-            let mut num_pops = 0;
+            let mut op_codes = vec![];
 
             // Pop all the locals at the current scope.
             while !compiler.locals.is_empty()
                 && compiler.locals.last().unwrap().depth > compiler.scope_depth
             {
-                num_pops += 1;
+                if compiler.locals.last().unwrap().is_captured {
+                    op_codes.push(OpCode::CloseUpvalue);
+                } else {
+                    op_codes.push(OpCode::Pop);
+                }
                 compiler.locals.pop();
             }
 
-            num_pops
+            op_codes
         };
 
-        for _ in 0..num_pops {
-            self.emit_code(OpCode::Pop);
+        for code in op_codes {
+            self.emit_code(code);
         }
     }
 

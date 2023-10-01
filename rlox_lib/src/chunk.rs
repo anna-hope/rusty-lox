@@ -41,6 +41,7 @@ pub(crate) enum OpCode {
     Call(usize),
     Closure(usize, usize),
     Upvalue(Upvalue),
+    CloseUpvalue,
     Return,
 }
 
