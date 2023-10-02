@@ -357,7 +357,6 @@ impl Vm {
 
         while upvalue
             .as_ref()
-            .cloned()
             .is_some_and(|x| Rc::as_ptr(&x.borrow().location) > Rc::as_ptr(&local))
         {
             prev_upvalue = upvalue.as_ref().cloned();
@@ -382,36 +381,6 @@ impl Vm {
 
         created_upvalue
     }
-
-    // fn capture_upvalue(&mut self, local: BoxedValue) -> BoxedObjUpvalue {
-    //     let mut upvalue: Option<BoxedObjUpvalue> = None;
-    //     let mut insert_index: Option<usize> = None;
-    //
-    //     for (index, this_upvalue) in self.open_upvalues.iter().enumerate() {
-    //         if Rc::as_ptr(&this_upvalue.borrow().location) <= Rc::as_ptr(&local) {
-    //             break;
-    //         }
-    //
-    //         upvalue = Some(Rc::clone(this_upvalue));
-    //         insert_index = Some(index);
-    //     }
-    //
-    //     println!("{local}");
-    //     dbg!(&self.open_upvalues);
-    //     if let Some(upvalue) = upvalue {
-    //         if upvalue.borrow().location == local {
-    //             return upvalue;
-    //         }
-    //     }
-    //
-    //     let created_upvalue = Rc::new(RefCell::new(ObjUpvalue::new(local)));
-    //
-    //     let index = insert_index.unwrap_or_default();
-    //     self.open_upvalues
-    //         .insert(index, Rc::clone(&created_upvalue));
-    //
-    //     created_upvalue
-    // }
 
     fn close_upvalues(&mut self, last: BoxedValue) {
         while self
