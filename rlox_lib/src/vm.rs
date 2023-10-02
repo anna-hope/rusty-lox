@@ -417,7 +417,6 @@ impl Vm {
         while self
             .head_open_upvalue
             .as_ref()
-            .cloned()
             .is_some_and(|x| Rc::as_ptr(&x.borrow().location) >= Rc::as_ptr(&last))
         {
             let upvalue = self.head_open_upvalue.as_ref().cloned().unwrap();
