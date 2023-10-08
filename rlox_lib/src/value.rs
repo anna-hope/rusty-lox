@@ -24,11 +24,7 @@ impl Obj {
 
 impl fmt::Display for Obj {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let name = if let Some(name) = self.name {
-            name
-        } else {
-            "UNNAMED".into()
-        };
+        let name = self.name.unwrap_or("UNNAMED".into());
         write!(f, "{name}")
     }
 }
