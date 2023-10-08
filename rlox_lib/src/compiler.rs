@@ -3,6 +3,7 @@ use std::ops::Add;
 use std::rc::Rc;
 use std::{env, mem};
 
+use gc::{Gc, GcCell};
 use thiserror::Error;
 use ustr::Ustr;
 
@@ -206,8 +207,8 @@ impl Compiler {
         self.locals.last_mut().unwrap().initialized = true;
     }
 
-    fn chunk(&self) -> Rc<RefCell<Chunk>> {
-        Rc::clone(&self.function.chunk)
+    fn chunk(&self) -> Gc<GcCell<Chunk>> {
+        self.function.chunk.clone()
     }
 }
 
@@ -694,7 +695,7 @@ impl Parser {
         let upvalues = &compiler.borrow().upvalues;
 
         self.emit_closure(
-            Value::Closure(Rc::new(RefCell::new(ObjClosure::new(function)))),
+            Value::Closure(Gc::new(GcCell::new(ObjClosure::new(function)))),
             upvalues,
         );
     }

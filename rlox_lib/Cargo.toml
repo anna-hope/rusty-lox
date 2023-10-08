@@ -11,3 +11,4 @@ lazy_static = "1.4.0"
 mimalloc = "0.1.39"
 thiserror = "1"
 ustr = "0.10.0"
+gc = { git = "https://github.com/Manishearth/rust-gc.git", rev = "9ce4e3c8d0b32053b16be9f1d27b635574259736", features = ["derive"] }

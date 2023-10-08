@@ -1,3 +1,4 @@
+use gc::{Finalize, Trace};
 use std::fmt::{Display, Formatter};
 
 use crate::value::Value;
@@ -66,8 +67,9 @@ impl Display for OpCode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Trace, Finalize)]
 pub(crate) struct Chunk {
+    #[unsafe_ignore_trace]
     pub codes: Vec<OpCode>,
     pub lines: Vec<usize>,
     constants: Vec<Value>,

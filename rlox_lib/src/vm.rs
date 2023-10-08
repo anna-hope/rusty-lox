@@ -6,14 +6,17 @@ use std::time::SystemTime;
 use std::{env, fmt};
 
 use fnv::FnvHashMap;
+use gc::{Gc, GcCell};
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::value::{BoxedObjUpvalue, NativeFn, ObjClosure, ObjNative, ObjUpvalue};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
-    value::{BoxedValue, NativeFnResult, Value},
+    value::{
+        BoxedObjUpvalue, BoxedValue, NativeFn, NativeFnResult, ObjClosure, ObjNative, ObjUpvalue,
+        Value,
+    },
 };
 
 const FRAMES_MAX: usize = 64;
@@ -22,6 +25,7 @@ const STACK_MAX: usize = FRAMES_MAX * 256;
 pub type Result<T> = std::result::Result<T, InterpretError>;
 
 type Stack = Vec<BoxedValue>;
+type BoxedClosure = Gc<GcCell<ObjClosure>>;
 
 #[derive(Debug, Error)]
 pub enum InterpretError {
@@ -34,13 +38,13 @@ pub enum InterpretError {
 
 #[derive(Debug)]
 struct CallFrame {
-    closure: Rc<RefCell<ObjClosure>>,
+    closure: BoxedClosure,
     ip: usize,
     stack_offset: usize,
 }
 
 impl CallFrame {
-    fn new(closure: Rc<RefCell<ObjClosure>>, stack_offset: usize) -> Self {
+    fn new(closure: BoxedClosure, stack_offset: usize) -> Self {
         Self {
             closure,
             ip: 0,
@@ -61,7 +65,7 @@ impl Vm {
     pub fn new() -> Self {
         // Set aside the first stack slot for methods later.
         let mut stack = Vec::with_capacity(STACK_MAX);
-        stack.push(Rc::new(Value::Nil));
+        stack.push(Gc::new(Value::Nil));
 
         let mut vm = Self {
             frames: Vec::with_capacity(FRAMES_MAX),
@@ -71,16 +75,14 @@ impl Vm {
         };
 
         vm.define_native("clock", clock_native);
-        vm.define_native("refcount", refcount_native);
         vm
     }
 
     pub fn interpret(&mut self, source: String) -> Result<()> {
         let mut parser = Parser::new(source);
         let function = parser.compile()?;
-        let closure = Rc::new(RefCell::new(ObjClosure::new(function)));
-        self.stack
-            .push(Rc::new(Value::Closure(Rc::clone(&closure))));
+        let closure = Gc::new(GcCell::new(ObjClosure::new(function)));
+        self.stack.push(Gc::new(Value::Closure(closure.clone())));
 
         self.call(closure, 0).unwrap();
         self.run()
@@ -88,7 +90,7 @@ impl Vm {
 
     fn run(&mut self) -> Result<()> {
         let mut frame = Rc::clone(self.frames.last().unwrap());
-        let mut chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
+        let mut chunk = Gc::clone(&frame.borrow().closure.borrow().function.chunk);
 
         let trace_execution = env::var("DEBUG_TRACE_EXECUTION") == Ok("1".into());
 
@@ -122,14 +124,14 @@ impl Vm {
                 }
                 OpCode::Call(arg_count) => {
                     // Go past the function arguments to get the function Value from the stack.
-                    let callee = Rc::clone(&self.stack[self.stack.len() - arg_count - 1]);
+                    let callee = Gc::clone(&self.stack[self.stack.len() - arg_count - 1]);
                     self.call_value(callee, arg_count)?;
                     frame = Rc::clone(self.frames.last().unwrap());
-                    chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
+                    chunk = Gc::clone(&frame.borrow().closure.borrow().function.chunk);
                 }
                 OpCode::Closure(index, upvalue_count) => {
-                    let value = Rc::new(chunk.borrow().read_constant(index).clone());
-                    self.stack.push(Rc::clone(&value));
+                    let value = Gc::new(chunk.borrow().read_constant(index).clone());
+                    self.stack.push(Gc::clone(&value));
 
                     let mut upvalues = vec![];
                     for _ in 0..upvalue_count {
@@ -147,7 +149,7 @@ impl Vm {
                         Value::Closure(closure) => {
                             for upvalue in upvalues {
                                 if upvalue.is_local {
-                                    let value = Rc::clone(
+                                    let value = Gc::clone(
                                         &self.stack[frame.borrow().stack_offset + upvalue.index],
                                     );
                                     closure
@@ -155,7 +157,7 @@ impl Vm {
                                         .upvalues
                                         .push(self.capture_upvalue(value));
                                 } else {
-                                    closure.borrow_mut().upvalues.push(Rc::clone(
+                                    closure.borrow_mut().upvalues.push(Gc::clone(
                                         &frame.borrow().closure.borrow().upvalues[index],
                                     ));
                                 }
@@ -186,15 +188,15 @@ impl Vm {
                     self.stack.truncate(frame.borrow().stack_offset);
                     self.stack.push(result);
                     frame = Rc::clone(self.frames.last().unwrap());
-                    chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
+                    chunk = Gc::clone(&frame.borrow().closure.borrow().function.chunk);
                 }
                 OpCode::Constant(index) => {
                     let constant = chunk.borrow().read_constant(index).clone();
-                    self.stack.push(Rc::new(constant));
+                    self.stack.push(Gc::new(constant));
                 }
-                OpCode::Nil => self.stack.push(Rc::new(Value::Nil)),
-                OpCode::True => self.stack.push(Rc::new(true.into())),
-                OpCode::False => self.stack.push(Rc::new(false.into())),
+                OpCode::Nil => self.stack.push(Gc::new(Value::Nil)),
+                OpCode::True => self.stack.push(Gc::new(true.into())),
+                OpCode::False => self.stack.push(Gc::new(false.into())),
                 OpCode::Pop => {
                     self.stack.pop();
                 }
@@ -213,13 +215,13 @@ impl Vm {
                     let slot = slot + frame.borrow().stack_offset;
                     // Have to add 1 to the slot with offset here because
                     // reasons.
-                    let value = Rc::clone(&self.stack[slot + 1]);
+                    let value = Gc::clone(&self.stack[slot + 1]);
                     self.stack[slot] = value;
                 }
                 OpCode::GetGlobal(slot) => {
                     let name = chunk.borrow().read_constant(slot).name().unwrap();
                     if let Some(variable) = self.globals.get(&name) {
-                        self.stack.push(Rc::clone(variable));
+                        self.stack.push(Gc::clone(variable));
                     } else {
                         return Err(self.runtime_error(format!("Undefined variable: {name}")));
                     }
@@ -239,7 +241,7 @@ impl Vm {
                     }
                 }
                 OpCode::GetUpvalue(slot) => {
-                    let value = Rc::clone(
+                    let value = Gc::clone(
                         &frame.borrow().closure.borrow().upvalues[slot]
                             .borrow()
                             .location,
@@ -247,7 +249,7 @@ impl Vm {
                     self.stack.push(value);
                 }
                 OpCode::SetUpvalue(slot) => {
-                    let value = Rc::clone(self.stack.last().unwrap());
+                    let value = Gc::clone(self.stack.last().unwrap());
                     frame.borrow().closure.borrow().upvalues[slot]
                         .borrow_mut()
                         .location = value;
@@ -255,7 +257,7 @@ impl Vm {
                 OpCode::Equal => {
                     let b = self.stack.pop().unwrap();
                     let a = self.stack.pop().unwrap();
-                    self.stack.push(Rc::new((a == b).into()));
+                    self.stack.push(Gc::new((a == b).into()));
                 }
                 OpCode::Greater => comparison_op(&mut self.stack, PartialOrd::gt)?,
                 OpCode::Less => comparison_op(&mut self.stack, PartialOrd::lt)?,
@@ -270,12 +272,12 @@ impl Vm {
                             let a = a.replace('"', "");
                             let b = b.replace('"', "");
                             let result = format!("\"{}\"", a + b.as_str());
-                            self.stack.push(Rc::new(result.into()));
+                            self.stack.push(Gc::new(result.into()));
                         }
                         (Value::Number(a), Value::Number(b)) => {
                             self.stack.pop();
                             self.stack.pop();
-                            self.stack.push(Rc::new((a + b).into()));
+                            self.stack.push(Gc::new((a + b).into()));
                         }
                         _ => {
                             return Err(self.runtime_error(format!(
@@ -289,7 +291,7 @@ impl Vm {
                 OpCode::Divide => binary_op(&mut self.stack, Div::div)?,
                 OpCode::Not => {
                     let bool_val = self.stack.pop().unwrap().is_falsey();
-                    self.stack.push(Rc::new(bool_val.into()));
+                    self.stack.push(Gc::new(bool_val.into()));
                 }
                 OpCode::Negate => {
                     // Inspect the value from the stack without popping it first,
@@ -299,7 +301,7 @@ impl Vm {
                     match value.as_ref() {
                         Value::Number(value) => {
                             self.stack.pop();
-                            self.stack.push(Rc::new(Value::Number(-*value)))
+                            self.stack.push(Gc::new(Value::Number(-*value)))
                         }
                         _ => {
                             return Err(self.runtime_error("Operand must be a number."));
@@ -310,7 +312,7 @@ impl Vm {
         }
     }
 
-    fn call(&mut self, closure: Rc<RefCell<ObjClosure>>, arg_count: usize) -> Result<()> {
+    fn call(&mut self, closure: BoxedClosure, arg_count: usize) -> Result<()> {
         let arity = closure.borrow().function.arity;
         if arg_count > arity {
             return Err(
@@ -328,9 +330,9 @@ impl Vm {
         Ok(())
     }
 
-    fn call_value(&mut self, callee: Rc<Value>, arg_count: usize) -> Result<()> {
+    fn call_value(&mut self, callee: BoxedValue, arg_count: usize) -> Result<()> {
         match callee.as_ref() {
-            Value::Closure(closure) => self.call(Rc::clone(closure), arg_count),
+            Value::Closure(closure) => self.call(Gc::clone(closure), arg_count),
             Value::ObjNative(native) => {
                 let stack_len = self.stack.len();
                 let args = &mut self.stack.as_mut_slice()[stack_len - arg_count..stack_len];
@@ -340,7 +342,7 @@ impl Vm {
                             self.stack.pop();
                         }
                         if let Some(result_value) = result {
-                            self.stack.push(Rc::new(result_value))
+                            self.stack.push(Gc::new(result_value))
                         }
                         Ok(())
                     }
@@ -357,7 +359,7 @@ impl Vm {
 
         while upvalue
             .as_ref()
-            .is_some_and(|x| Rc::as_ptr(&x.borrow().location) > Rc::as_ptr(&local))
+            .is_some_and(|x| Gc::as_ptr(&x.borrow().location) > Gc::as_ptr(&local))
         {
             prev_upvalue = upvalue.as_ref().cloned();
             upvalue = upvalue.unwrap().borrow().next.as_ref().cloned();
@@ -371,12 +373,12 @@ impl Vm {
 
         let mut created_upvalue = ObjUpvalue::new(local);
         created_upvalue.next = upvalue;
-        let created_upvalue = Rc::new(RefCell::new(created_upvalue));
+        let created_upvalue = Gc::new(GcCell::new(created_upvalue));
 
         if let Some(prev_upvalue) = prev_upvalue {
-            prev_upvalue.borrow_mut().next = Some(Rc::clone(&created_upvalue));
+            prev_upvalue.borrow_mut().next = Some(Gc::clone(&created_upvalue));
         } else {
-            self.head_open_upvalue = Some(Rc::clone(&created_upvalue));
+            self.head_open_upvalue = Some(Gc::clone(&created_upvalue));
         }
 
         created_upvalue
@@ -386,12 +388,12 @@ impl Vm {
         while self
             .head_open_upvalue
             .as_ref()
-            .is_some_and(|x| Rc::as_ptr(&x.borrow().location) >= Rc::as_ptr(&last))
+            .is_some_and(|x| Gc::as_ptr(&x.borrow().location) >= Gc::as_ptr(&last))
         {
             let upvalue = self.head_open_upvalue.as_ref().cloned().unwrap();
             let mut upvalue = upvalue.borrow_mut();
-            upvalue.closed = Rc::clone(&upvalue.location);
-            upvalue.location = Rc::clone(&upvalue.closed);
+            upvalue.closed = Gc::clone(&upvalue.location);
+            upvalue.location = Gc::clone(&upvalue.closed);
             self.head_open_upvalue = upvalue.next.as_ref().cloned();
         }
     }
@@ -416,11 +418,11 @@ impl Vm {
     }
 
     fn define_native(&mut self, name: &str, function: NativeFn) {
-        let native_fn_val = Rc::new(Value::ObjNative(ObjNative::new(function)));
+        let native_fn_val = Gc::new(Value::ObjNative(ObjNative::new(function)));
 
         // Push onto the stack to prevent them from being collected by GC.
-        self.stack.push(Rc::new(Value::String(name.into())));
-        self.stack.push(Rc::clone(&native_fn_val));
+        self.stack.push(Gc::new(Value::String(name.into())));
+        self.stack.push(Gc::clone(&native_fn_val));
         self.globals.insert(name.into(), native_fn_val);
 
         self.stack.pop();
@@ -440,7 +442,7 @@ where
             stack.pop();
             stack.pop();
             let result = op(*a, *b);
-            stack.push(Rc::new(result.into()));
+            stack.push(Gc::new(result.into()));
         }
         _ => {
             // runtime_error();
@@ -464,7 +466,7 @@ where
             stack.pop();
             stack.pop();
             let result = op(a, b);
-            stack.push(Rc::new(result.into()));
+            stack.push(Gc::new(result.into()));
         }
         _ => {
             return Err(InterpretError::Runtime(
@@ -483,15 +485,6 @@ fn clock_native(_args: &mut [BoxedValue]) -> NativeFnResult {
             .as_secs_f64()
             .into(),
     ))
-}
-
-fn refcount_native(args: &mut [BoxedValue]) -> NativeFnResult {
-    if let Some(value) = args.first() {
-        let strong_count = u32::try_from(Rc::strong_count(value))?;
-        Ok(Some(f64::from(strong_count).into()))
-    } else {
-        Err("This function takes one argument".into())
-    }
 }
 
 // #[cfg(test)]
