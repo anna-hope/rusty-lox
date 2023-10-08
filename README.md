@@ -3,6 +3,9 @@
 A work-in-progress interpreter for the Lox language from [Crafting Interpreters](https://craftinginterpreters.com),
 implemented in Rust.
 
+**Warning:** this is a GC-based branch of the interpreter, which can be up to 3x slower than
+the main (reference counting-based) branch.
+
 ## Running
 
 ### REPL
