@@ -9,11 +9,13 @@ use fnv::FnvHashMap;
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::value::{BoxedObjUpvalue, NativeFn, ObjClosure, ObjNative, ObjUpvalue};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
-    value::{BoxedValue, NativeFnResult, Value},
+    value::{
+        BoxedObjClosure, BoxedObjUpvalue, BoxedValue, NativeFn, NativeFnResult, ObjClosure,
+        ObjNative, ObjUpvalue, Value,
+    },
 };
 
 const FRAMES_MAX: usize = 64;
@@ -34,13 +36,13 @@ pub enum InterpretError {
 
 #[derive(Debug)]
 struct CallFrame {
-    closure: Rc<RefCell<ObjClosure>>,
+    closure: BoxedObjClosure,
     ip: usize,
     stack_offset: usize,
 }
 
 impl CallFrame {
-    fn new(closure: Rc<RefCell<ObjClosure>>, stack_offset: usize) -> Self {
+    fn new(closure: BoxedObjClosure, stack_offset: usize) -> Self {
         Self {
             closure,
             ip: 0,
@@ -310,7 +312,7 @@ impl Vm {
         }
     }
 
-    fn call(&mut self, closure: Rc<RefCell<ObjClosure>>, arg_count: usize) -> Result<()> {
+    fn call(&mut self, closure: BoxedObjClosure, arg_count: usize) -> Result<()> {
         let arity = closure.borrow().function.arity;
         if arg_count > arity {
             return Err(

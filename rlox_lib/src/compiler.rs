@@ -7,9 +7,9 @@ use thiserror::Error;
 use ustr::Ustr;
 
 use crate::chunk::OpCode::Divide;
-use crate::chunk::{Chunk, OpCode, Upvalue};
+use crate::chunk::{OpCode, Upvalue};
 use crate::scanner::{Scanner, Token, TokenType};
-use crate::value::{Function, Obj, ObjClosure, Value};
+use crate::value::{BoxedChunk, Function, Obj, ObjClosure, Value};
 
 type BoxedCompiler = Rc<RefCell<Compiler>>;
 
@@ -206,7 +206,7 @@ impl Compiler {
         self.locals.last_mut().unwrap().initialized = true;
     }
 
-    fn chunk(&self) -> Rc<RefCell<Chunk>> {
+    fn chunk(&self) -> BoxedChunk {
         Rc::clone(&self.function.chunk)
     }
 }

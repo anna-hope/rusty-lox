@@ -8,6 +8,8 @@ use ustr::Ustr;
 use crate::chunk::Chunk;
 
 pub(crate) type BoxedValue = Rc<Value>;
+pub(crate) type BoxedObjClosure = Rc<RefCell<ObjClosure>>;
+pub(crate) type BoxedChunk = Rc<RefCell<Chunk>>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub(crate) struct Obj {
@@ -35,7 +37,7 @@ impl fmt::Display for Obj {
 pub(crate) struct Function {
     pub obj: Obj,
     pub arity: usize,
-    pub chunk: Rc<RefCell<Chunk>>,
+    pub chunk: BoxedChunk,
     pub name: Option<Ustr>,
     pub upvalue_count: usize,
 }
@@ -136,7 +138,7 @@ pub(crate) enum Value {
     String(Ustr),
     Obj(Obj),
     ObjNative(ObjNative),
-    Closure(Rc<RefCell<ObjClosure>>),
+    Closure(BoxedObjClosure),
 }
 
 impl Value {
