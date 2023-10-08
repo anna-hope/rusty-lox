@@ -10,6 +10,7 @@ use crate::chunk::Chunk;
 pub(crate) type BoxedValue = Rc<Value>;
 pub(crate) type BoxedObjClosure = Rc<RefCell<ObjClosure>>;
 pub(crate) type BoxedChunk = Rc<RefCell<Chunk>>;
+pub(crate) type BoxedObjClass = Rc<RefCell<ObjClass>>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub(crate) struct Obj {
@@ -104,6 +105,27 @@ impl fmt::Display for ObjClosure {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ObjClass {
+    pub obj: Obj,
+    pub name: Ustr,
+}
+
+impl ObjClass {
+    pub fn new(name: Ustr) -> Self {
+        Self {
+            obj: Obj::default(),
+            name,
+        }
+    }
+}
+
+impl fmt::Display for ObjClass {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
 pub(crate) type BoxedObjUpvalue = Rc<RefCell<ObjUpvalue>>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +157,7 @@ pub(crate) enum Value {
     Obj(Obj),
     ObjNative(ObjNative),
     Closure(BoxedObjClosure),
+    Class(BoxedObjClass),
 }
 
 impl Value {
@@ -165,6 +188,7 @@ impl fmt::Display for Value {
             Self::Obj(value) => value.to_string(),
             Self::ObjNative(_) => "<native fn>".to_string(),
             Self::Closure(closure) => closure.borrow().to_string(),
+            Self::Class(class) => class.borrow().to_string(),
         };
         write!(f, "{string}")
     }

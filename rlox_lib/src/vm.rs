@@ -9,6 +9,7 @@ use fnv::FnvHashMap;
 use thiserror::Error;
 use ustr::Ustr;
 
+use crate::value::ObjClass;
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
@@ -307,6 +308,11 @@ impl Vm {
                             return Err(self.runtime_error("Operand must be a number."));
                         }
                     }
+                }
+                OpCode::Class(index) => {
+                    let name = chunk.borrow().read_constant(index).name().unwrap();
+                    let class = Rc::new(Value::Class(Rc::new(RefCell::new(ObjClass::new(name)))));
+                    self.stack.push(class);
                 }
             }
         }

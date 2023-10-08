@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter};
 use crate::value::Value;
 
 type JumpOffset = usize;
-type StackSlot = usize;
+type ConstantIndex = usize;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub(crate) struct Upvalue {
@@ -13,18 +13,18 @@ pub(crate) struct Upvalue {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) enum OpCode {
-    Constant(usize),
+    Constant(ConstantIndex),
     Nil,
     True,
     False,
     Pop,
-    GetLocal(StackSlot),
-    SetLocal(StackSlot),
-    GetGlobal(StackSlot),
-    DefineGlobal(StackSlot),
-    SetGlobal(StackSlot),
-    GetUpvalue(StackSlot),
-    SetUpvalue(StackSlot),
+    GetLocal(ConstantIndex),
+    SetLocal(ConstantIndex),
+    GetGlobal(ConstantIndex),
+    DefineGlobal(ConstantIndex),
+    SetGlobal(ConstantIndex),
+    GetUpvalue(ConstantIndex),
+    SetUpvalue(ConstantIndex),
     Equal,
     Greater,
     Less,
@@ -43,6 +43,7 @@ pub(crate) enum OpCode {
     Upvalue(Upvalue),
     CloseUpvalue,
     Return,
+    Class(ConstantIndex),
 }
 
 impl Display for OpCode {
