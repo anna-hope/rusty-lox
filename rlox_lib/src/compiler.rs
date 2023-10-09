@@ -473,6 +473,9 @@ impl Parser {
 
     fn string(&mut self, _can_assign: bool) {
         let string = self.previous.unwrap().value;
+        // We need to store strings without the leading and trailing quotes.
+        let string_bytes = string.as_bytes()[1..string.len() - 1].to_vec();
+        let string = unsafe { String::from_utf8_unchecked(string_bytes) };
         self.emit_constant(string.into());
     }
 

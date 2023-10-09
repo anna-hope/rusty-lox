@@ -303,9 +303,7 @@ impl Vm {
                         (Value::String(a), Value::String(b)) => {
                             self.stack.pop();
                             self.stack.pop();
-                            let a = a.replace('"', "");
-                            let b = b.replace('"', "");
-                            let result = format!("\"{}\"", a + b.as_str());
+                            let result = a.as_str().to_owned() + b.as_str();
                             self.stack.push(Rc::new(result.into()));
                         }
                         (Value::Number(a), Value::Number(b)) => {
