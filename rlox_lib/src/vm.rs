@@ -77,6 +77,7 @@ impl Vm {
         vm.define_native("refcount", refcount_native);
         vm.define_native("hasattr", hasattr_native);
         vm.define_native("setattr", setattr_native);
+        vm.define_native("delattr", delattr_native);
         vm
     }
 
@@ -573,6 +574,20 @@ fn setattr_native(args: &mut [BoxedValue]) -> NativeFnResult {
         }
     } else {
         Err("This function takes three arguments".into())
+    }
+}
+
+fn delattr_native(args: &mut [BoxedValue]) -> NativeFnResult {
+    if let (Some(instance), Some(attribute)) = (args.first(), args.get(1)) {
+        match (instance.as_ref(), attribute.as_ref()) {
+            (Value::Instance(instance), Value::String(string)) => {
+                instance.borrow_mut().fields.remove(string);
+                Ok(None)
+            }
+            _ => Err("This function takes a class instance and a string attribute name".into()),
+        }
+    } else {
+        Err("This function takes two arguments".into())
     }
 }
 
