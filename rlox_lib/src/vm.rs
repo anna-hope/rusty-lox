@@ -76,6 +76,7 @@ impl Vm {
         vm.define_native("clock", clock_native);
         vm.define_native("refcount", refcount_native);
         vm.define_native("hasattr", hasattr_native);
+        vm.define_native("setattr", setattr_native);
         vm
     }
 
@@ -388,6 +389,8 @@ impl Vm {
                         }
                         if let Some(result_value) = result {
                             self.stack.push(Rc::new(result_value))
+                        } else {
+                            self.stack.push(Rc::new(Value::Nil))
                         }
                         Ok(())
                     }
@@ -552,6 +555,24 @@ fn hasattr_native(args: &mut [BoxedValue]) -> NativeFnResult {
         }
     } else {
         Err("This function takes two arguments".into())
+    }
+}
+
+fn setattr_native(args: &mut [BoxedValue]) -> NativeFnResult {
+    // This takes 3 arguments: a class instance, an attribute name, and an attribute value.
+    if let (Some(instance), Some(attribute), Some(value)) = (args.first(), args.get(1), args.get(2))
+    {
+        match (instance.as_ref(), attribute.as_ref(), value.as_ref()) {
+            (Value::Instance(instance), Value::String(name), _) => {
+                instance.borrow_mut().fields.insert(*name, Rc::clone(value));
+                Ok(None)
+            }
+            _ => Err(
+                "This function takes a class instance, a string attribute name, and a value".into(),
+            ),
+        }
+    } else {
+        Err("This function takes three arguments".into())
     }
 }
 
