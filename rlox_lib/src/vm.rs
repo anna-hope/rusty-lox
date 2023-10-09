@@ -75,6 +75,7 @@ impl Vm {
 
         vm.define_native("clock", clock_native);
         vm.define_native("refcount", refcount_native);
+        vm.define_native("hasattr", hasattr_native);
         vm
     }
 
@@ -537,6 +538,20 @@ fn refcount_native(args: &mut [BoxedValue]) -> NativeFnResult {
         Ok(Some(f64::from(strong_count).into()))
     } else {
         Err("This function takes one argument".into())
+    }
+}
+
+fn hasattr_native(args: &mut [BoxedValue]) -> NativeFnResult {
+    if let (Some(instance), Some(attribute)) = (args.first(), args.get(1)) {
+        match (instance.as_ref(), attribute.as_ref()) {
+            (Value::Instance(instance), Value::String(string)) => {
+                let has_attr = instance.borrow().fields.contains_key(string);
+                Ok(Some(has_attr.into()))
+            }
+            _ => Err("This function takes a class instance and a string attribute name".into()),
+        }
+    } else {
+        Err("This function takes two arguments".into())
     }
 }
 
