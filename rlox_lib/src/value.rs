@@ -1,3 +1,4 @@
+use fnv::FnvHashMap;
 use std::cell::RefCell;
 use std::fmt;
 use std::fmt::Formatter;
@@ -10,7 +11,8 @@ use crate::chunk::Chunk;
 pub(crate) type BoxedValue = Rc<Value>;
 pub(crate) type BoxedObjClosure = Rc<RefCell<ObjClosure>>;
 pub(crate) type BoxedChunk = Rc<RefCell<Chunk>>;
-pub(crate) type BoxedObjClass = Rc<RefCell<ObjClass>>;
+pub(crate) type BoxedObjClass = Rc<ObjClass>;
+pub(crate) type BoxedObjInstance = Rc<RefCell<ObjInstance>>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub(crate) struct Obj {
@@ -126,6 +128,29 @@ impl fmt::Display for ObjClass {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ObjInstance {
+    pub obj: Obj,
+    pub class: BoxedObjClass,
+    pub fields: FnvHashMap<Ustr, BoxedValue>,
+}
+
+impl ObjInstance {
+    pub fn new(class: BoxedObjClass) -> Self {
+        Self {
+            obj: Obj::default(),
+            class,
+            fields: FnvHashMap::default(),
+        }
+    }
+}
+
+impl fmt::Display for ObjInstance {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{} instance", self.class.name)
+    }
+}
+
 pub(crate) type BoxedObjUpvalue = Rc<RefCell<ObjUpvalue>>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +183,7 @@ pub(crate) enum Value {
     ObjNative(ObjNative),
     Closure(BoxedObjClosure),
     Class(BoxedObjClass),
+    Instance(BoxedObjInstance),
 }
 
 impl Value {
@@ -188,7 +214,8 @@ impl fmt::Display for Value {
             Self::Obj(value) => value.to_string(),
             Self::ObjNative(_) => "<native fn>".to_string(),
             Self::Closure(closure) => closure.borrow().to_string(),
-            Self::Class(class) => class.borrow().to_string(),
+            Self::Class(class) => class.to_string(),
+            Self::Instance(instance) => instance.borrow().to_string(),
         };
         write!(f, "{string}")
     }

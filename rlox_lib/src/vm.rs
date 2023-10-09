@@ -9,7 +9,7 @@ use fnv::FnvHashMap;
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::value::ObjClass;
+use crate::value::{ObjClass, ObjInstance};
 use crate::{
     chunk::OpCode,
     compiler::{Parser, ParserError},
@@ -255,6 +255,39 @@ impl Vm {
                         .borrow_mut()
                         .location = value;
                 }
+                OpCode::GetProperty(index) => {
+                    let instance = Rc::clone(self.stack.last().unwrap());
+                    match instance.as_ref() {
+                        Value::Instance(instance) => {
+                            let name = chunk.borrow().read_constant(index).name().unwrap();
+                            if let Some(value) = instance.borrow().fields.get(&name) {
+                                self.stack.pop(); // Instance.
+                                self.stack.push(Rc::clone(value));
+                            } else {
+                                return Err(
+                                    self.runtime_error(format!("Undefined property '{name}'."))
+                                );
+                            }
+                        }
+                        _ => return Err(self.runtime_error("Only instances have properties")),
+                    }
+                }
+                OpCode::SetProperty(index) => {
+                    let instance = Rc::clone(self.stack.get(self.stack.len() - 2).unwrap());
+                    match instance.as_ref() {
+                        Value::Instance(instance) => {
+                            let name = chunk.borrow().read_constant(index).name().unwrap();
+                            instance
+                                .borrow_mut()
+                                .fields
+                                .insert(name, Rc::clone(self.stack.last().unwrap()));
+                            let value = self.stack.pop().unwrap();
+                            self.stack.pop();
+                            self.stack.push(value);
+                        }
+                        _ => return Err(self.runtime_error("Only instances have fields.")),
+                    }
+                }
                 OpCode::Equal => {
                     let b = self.stack.pop().unwrap();
                     let a = self.stack.pop().unwrap();
@@ -311,7 +344,7 @@ impl Vm {
                 }
                 OpCode::Class(index) => {
                     let name = chunk.borrow().read_constant(index).name().unwrap();
-                    let class = Rc::new(Value::Class(Rc::new(RefCell::new(ObjClass::new(name)))));
+                    let class = Rc::new(Value::Class(Rc::new(ObjClass::new(name))));
                     self.stack.push(class);
                 }
             }
@@ -338,6 +371,13 @@ impl Vm {
 
     fn call_value(&mut self, callee: Rc<Value>, arg_count: usize) -> Result<()> {
         match callee.as_ref() {
+            Value::Class(class) => {
+                let stack_len = self.stack.len();
+                self.stack[stack_len - arg_count - 1] = Rc::new(Value::Instance(Rc::new(
+                    RefCell::new(ObjInstance::new(Rc::clone(class))),
+                )));
+                Ok(())
+            }
             Value::Closure(closure) => self.call(Rc::clone(closure), arg_count),
             Value::ObjNative(native) => {
                 let stack_len = self.stack.len();

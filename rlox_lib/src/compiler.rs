@@ -72,7 +72,7 @@ impl From<TokenType> for Precedence {
             TokenType::RightParen => Precedence::Lowest,
             TokenType::LeftBrace | TokenType::RightBrace => Precedence::Lowest,
             TokenType::Comma => Precedence::Lowest,
-            TokenType::Dot => Precedence::Lowest,
+            TokenType::Dot => Precedence::Call,
             TokenType::Minus | TokenType::Plus => Precedence::Term,
             TokenType::Semicolon => Precedence::Lowest,
             TokenType::Slash | TokenType::Star => Precedence::Factor,
@@ -396,7 +396,7 @@ impl Parser {
         }
     }
 
-    fn binary(&mut self) {
+    fn binary(&mut self, _can_assign: bool) {
         let operator_type = self.previous.unwrap().token_type;
         let precedence: Precedence = operator_type.into();
         self.parse_precedence(precedence + 1);
@@ -416,9 +416,21 @@ impl Parser {
         }
     }
 
-    fn call(&mut self) {
+    fn call(&mut self, _can_assign: bool) {
         let arg_count = self.argument_list();
         self.emit_code(OpCode::Call(arg_count));
+    }
+
+    fn dot(&mut self, can_assign: bool) {
+        self.consume(TokenType::Identifier, "Expect property name after '.'.");
+        let name = self.identifier_constant(self.previous.unwrap());
+
+        if can_assign && self.match_token(TokenType::Equal) {
+            self.expression();
+            self.emit_code(OpCode::SetProperty(name));
+        } else {
+            self.emit_code(OpCode::GetProperty(name));
+        }
     }
 
     fn literal(&mut self, _can_assign: bool) {
@@ -448,7 +460,7 @@ impl Parser {
         self.emit_constant(value.into());
     }
 
-    fn or(&mut self) {
+    fn or(&mut self, _can_assign: bool) {
         let else_jump = self.emit_jump(OpCode::JumpIfFalse(0xff));
         let end_jump = self.emit_jump(OpCode::Jump(0xff));
 
@@ -524,7 +536,7 @@ impl Parser {
         }
     }
 
-    fn get_infix_rule(&self) -> Option<fn(&mut Parser)> {
+    fn get_infix_rule(&self) -> Option<fn(&mut Parser, bool)> {
         match self.previous.as_ref().unwrap().token_type {
             TokenType::Minus | TokenType::Plus => Some(Self::binary),
             TokenType::Slash | TokenType::Star => Some(Self::binary),
@@ -535,6 +547,7 @@ impl Parser {
             TokenType::And => Some(Self::and),
             TokenType::Or => Some(Self::or),
             TokenType::LeftParen => Some(Self::call),
+            TokenType::Dot => Some(Self::dot),
             _ => None,
         }
     }
@@ -554,7 +567,7 @@ impl Parser {
                         self.previous.as_ref().unwrap().token_type
                     )
                 });
-                infix_rule(self);
+                infix_rule(self, can_assign);
             }
 
             if can_assign && self.match_token(TokenType::Equal) {
@@ -634,7 +647,7 @@ impl Parser {
         arg_count
     }
 
-    fn and(&mut self) {
+    fn and(&mut self, _can_assign: bool) {
         let end_jump = self.emit_jump(OpCode::JumpIfFalse(0xff));
 
         self.emit_code(OpCode::Pop);

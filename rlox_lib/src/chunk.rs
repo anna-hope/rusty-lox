@@ -25,6 +25,8 @@ pub(crate) enum OpCode {
     SetGlobal(ConstantIndex),
     GetUpvalue(ConstantIndex),
     SetUpvalue(ConstantIndex),
+    GetProperty(ConstantIndex),
+    SetProperty(ConstantIndex),
     Equal,
     Greater,
     Less,
@@ -132,7 +134,9 @@ impl Chunk {
             OpCode::Constant(index)
             | OpCode::DefineGlobal(index)
             | OpCode::GetGlobal(index)
-            | OpCode::SetGlobal(index) => {
+            | OpCode::SetGlobal(index)
+            | OpCode::GetProperty(index)
+            | OpCode::SetProperty(index) => {
                 let value = &self.constants[index];
                 println!("{instruction:-16} {index:4} '{value:?}'");
             }
