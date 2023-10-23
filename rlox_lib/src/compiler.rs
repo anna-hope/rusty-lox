@@ -6,7 +6,6 @@ use std::{env, mem};
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::chunk::OpCode::Divide;
 use crate::chunk::{OpCode, Upvalue};
 use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::{BoxedChunk, Function, Obj, ObjClosure, Value};
@@ -405,7 +404,7 @@ impl Parser {
             TokenType::Plus => self.emit_code(OpCode::Add),
             TokenType::Minus => self.emit_code(OpCode::Subtract),
             TokenType::Star => self.emit_code(OpCode::Multiply),
-            TokenType::Slash => self.emit_code(Divide),
+            TokenType::Slash => self.emit_code(OpCode::Divide),
             TokenType::BangEqual => self.emit_codes(OpCode::Equal, OpCode::Not),
             TokenType::EqualEqual => self.emit_code(OpCode::Equal),
             TokenType::Greater => self.emit_code(OpCode::Greater),
@@ -715,16 +714,33 @@ impl Parser {
         );
     }
 
+    fn method(&mut self) {
+        self.consume(TokenType::Identifier, "Expect method name.");
+        let constant = self.identifier_constant(self.previous.unwrap());
+
+        let function_type = FunctionType::Function;
+        self.function(function_type);
+
+        self.emit_code(OpCode::Method(constant));
+    }
+
     fn class_declaration(&mut self) {
         self.consume(TokenType::Identifier, "Expect class name.");
+        let class_name = self.previous.unwrap();
         let name_constant = self.identifier_constant(self.previous.unwrap());
         self.declare_variable();
 
         self.emit_code(OpCode::Class(name_constant));
         self.define_variable(name_constant);
 
+        self.named_variable(class_name, false);
         self.consume(TokenType::LeftBrace, "Expect '{' before class body.");
+        while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof) {
+            self.method();
+        }
+
         self.consume(TokenType::RightBrace, "Expect '}' after class body.");
+        self.emit_code(OpCode::Pop);
     }
 
     fn fun_declaration(&mut self) {

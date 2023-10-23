@@ -9,14 +9,11 @@ use fnv::FnvHashMap;
 use thiserror::Error;
 use ustr::Ustr;
 
-use crate::value::{ObjClass, ObjInstance};
-use crate::{
-    chunk::OpCode,
-    compiler::{Parser, ParserError},
-    value::{
-        BoxedObjClosure, BoxedObjUpvalue, BoxedValue, NativeFn, NativeFnResult, ObjClosure,
-        ObjNative, ObjUpvalue, Value,
-    },
+use crate::chunk::OpCode;
+use crate::compiler::{Parser, ParserError};
+use crate::value::{
+    BoxedObjClass, BoxedObjClosure, BoxedObjUpvalue, BoxedValue, NativeFn, NativeFnResult,
+    ObjBoundMethod, ObjClass, ObjClosure, ObjInstance, ObjNative, ObjUpvalue, Value,
 };
 
 const FRAMES_MAX: usize = 64;
@@ -25,6 +22,12 @@ const STACK_MAX: usize = FRAMES_MAX * 256;
 pub type Result<T> = std::result::Result<T, InterpretError>;
 
 type Stack = Vec<BoxedValue>;
+
+macro_rules! get_name {
+    ($chunk:expr, $index:expr) => {
+        $chunk.borrow().read_constant($index).name().unwrap()
+    };
+}
 
 #[derive(Debug, Error)]
 pub enum InterpretError {
@@ -126,7 +129,7 @@ impl Vm {
                 OpCode::Call(arg_count) => {
                     // Go past the function arguments to get the function Value from the stack.
                     let callee = Rc::clone(&self.stack[self.stack.len() - arg_count - 1]);
-                    self.call_value(callee, arg_count)?;
+                    self.call_value(&callee, arg_count)?;
                     frame = Rc::clone(self.frames.last().unwrap());
                     chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
                 }
@@ -259,14 +262,12 @@ impl Vm {
                     let instance = Rc::clone(self.stack.last().unwrap());
                     match instance.as_ref() {
                         Value::Instance(instance) => {
-                            let name = chunk.borrow().read_constant(index).name().unwrap();
+                            let name = get_name!(chunk, index);
                             if let Some(value) = instance.borrow().fields.get(&name) {
                                 self.stack.pop(); // Instance.
                                 self.stack.push(Rc::clone(value));
                             } else {
-                                return Err(
-                                    self.runtime_error(format!("Undefined property '{name}'."))
-                                );
+                                self.bind_method(&instance.borrow().class, name)?
                             }
                         }
                         _ => return Err(self.runtime_error("Only instances have properties")),
@@ -341,9 +342,13 @@ impl Vm {
                     }
                 }
                 OpCode::Class(index) => {
-                    let name = chunk.borrow().read_constant(index).name().unwrap();
-                    let class = Rc::new(Value::Class(Rc::new(ObjClass::new(name))));
+                    let name = get_name!(chunk, index);
+                    let class = Rc::new(Value::Class(Rc::new(RefCell::new(ObjClass::new(name)))));
                     self.stack.push(class);
+                }
+                OpCode::Method(index) => {
+                    let name = get_name!(chunk, index);
+                    self.define_method(name);
                 }
             }
         }
@@ -367,8 +372,9 @@ impl Vm {
         Ok(())
     }
 
-    fn call_value(&mut self, callee: Rc<Value>, arg_count: usize) -> Result<()> {
+    fn call_value(&mut self, callee: &Rc<Value>, arg_count: usize) -> Result<()> {
         match callee.as_ref() {
+            Value::BoundMethod(bound) => self.call(Rc::clone(&bound.borrow().method), arg_count),
             Value::Class(class) => {
                 let stack_len = self.stack.len();
                 self.stack[stack_len - arg_count - 1] = Rc::new(Value::Instance(Rc::new(
@@ -394,6 +400,19 @@ impl Vm {
                 }
             }
             _ => Err(self.runtime_error("Can only call functions and classes.")),
+        }
+    }
+
+    fn bind_method(&mut self, class: &BoxedObjClass, name: Ustr) -> Result<()> {
+        if let Some(method) = class.borrow().methods.get(&name) {
+            let receiver = self.stack.pop().unwrap();
+            self.stack
+                .push(Rc::new(Value::BoundMethod(Rc::new(RefCell::new(
+                    ObjBoundMethod::new(receiver, Rc::clone(method)),
+                )))));
+            Ok(())
+        } else {
+            Err(self.runtime_error(format!("Undefined property {name}.")))
         }
     }
 
@@ -440,6 +459,21 @@ impl Vm {
             upvalue.location = Rc::clone(&upvalue.closed);
             self.head_open_upvalue = upvalue.next.as_ref().cloned();
         }
+    }
+
+    fn define_method(&mut self, name: Ustr) {
+        let method = self.stack.last().cloned().unwrap();
+        let class = self.stack.get(self.stack.len() - 2).cloned().unwrap();
+        match class.as_ref() {
+            Value::Class(class) => match method.as_ref() {
+                Value::Closure(closure) => {
+                    class.borrow_mut().methods.insert(name, Rc::clone(closure));
+                }
+                _ => panic!("Expected BoundMethod, got {method:?}"),
+            },
+            _ => panic!("Expected Class, got {class:?}"),
+        }
+        self.stack.pop();
     }
 
     fn runtime_error(&self, msg: impl fmt::Display) -> InterpretError {
@@ -539,30 +573,3 @@ fn refcount_native(args: &mut [BoxedValue]) -> NativeFnResult {
         Err("This function takes one argument".into())
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//
-//     #[test]
-//     fn evaluate_bool() {
-//         let input = "!(5 - 4 > 3 * 2 == !nil);";
-//         let mut vm = Vm::new();
-//         let value = &vm.interpret(input.to_string()).unwrap()[0];
-//         assert_eq!(value, &Value::Bool(true));
-//     }
-//
-//     #[test]
-//     fn evaluate_string() {
-//         let input = r#"
-// var beverage = "cafe au lait";
-// var breakfast = "beignets with " + beverage;
-// breakfast;
-// "#;
-//         let mut vm = Vm::new();
-//         let result = &vm.interpret(input.to_string()).unwrap();
-//         dbg!(&result);
-//         dbg!(&vm.stack);
-//         // assert_eq!(value, &Value::String("beignets with cafe au lait".into()));
-//     }
-// }

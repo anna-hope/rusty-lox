@@ -46,6 +46,7 @@ pub(crate) enum OpCode {
     CloseUpvalue,
     Return,
     Class(ConstantIndex),
+    Method(ConstantIndex),
 }
 
 impl Display for OpCode {
@@ -136,7 +137,8 @@ impl Chunk {
             | OpCode::GetGlobal(index)
             | OpCode::SetGlobal(index)
             | OpCode::GetProperty(index)
-            | OpCode::SetProperty(index) => {
+            | OpCode::SetProperty(index)
+            | OpCode::Method(index) => {
                 let value = &self.constants[index];
                 println!("{instruction:-16} {index:4} '{value:?}'");
             }

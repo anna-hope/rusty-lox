@@ -11,8 +11,9 @@ use crate::chunk::Chunk;
 pub(crate) type BoxedValue = Rc<Value>;
 pub(crate) type BoxedObjClosure = Rc<RefCell<ObjClosure>>;
 pub(crate) type BoxedChunk = Rc<RefCell<Chunk>>;
-pub(crate) type BoxedObjClass = Rc<ObjClass>;
+pub(crate) type BoxedObjClass = Rc<RefCell<ObjClass>>;
 pub(crate) type BoxedObjInstance = Rc<RefCell<ObjInstance>>;
+pub(crate) type BoxedObjBoundMethod = Rc<RefCell<ObjBoundMethod>>;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub(crate) struct Obj {
@@ -111,6 +112,7 @@ impl fmt::Display for ObjClosure {
 pub(crate) struct ObjClass {
     pub obj: Obj,
     pub name: Ustr,
+    pub methods: FnvHashMap<Ustr, BoxedObjClosure>,
 }
 
 impl ObjClass {
@@ -118,6 +120,7 @@ impl ObjClass {
         Self {
             obj: Obj::default(),
             name,
+            methods: FnvHashMap::default(),
         }
     }
 }
@@ -147,7 +150,30 @@ impl ObjInstance {
 
 impl fmt::Display for ObjInstance {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{} instance", self.class.name)
+        write!(f, "{} instance", self.class.borrow().name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ObjBoundMethod {
+    pub obj: Obj,
+    pub receiver: BoxedValue,
+    pub method: BoxedObjClosure,
+}
+
+impl fmt::Display for ObjBoundMethod {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.method.borrow().function)
+    }
+}
+
+impl ObjBoundMethod {
+    pub fn new(receiver: BoxedValue, method: BoxedObjClosure) -> Self {
+        Self {
+            obj: Obj::default(),
+            receiver,
+            method,
+        }
     }
 }
 
@@ -184,6 +210,7 @@ pub(crate) enum Value {
     Closure(BoxedObjClosure),
     Class(BoxedObjClass),
     Instance(BoxedObjInstance),
+    BoundMethod(BoxedObjBoundMethod),
 }
 
 impl Value {
@@ -214,8 +241,9 @@ impl fmt::Display for Value {
             Self::Obj(value) => value.to_string(),
             Self::ObjNative(_) => "<native fn>".to_string(),
             Self::Closure(closure) => closure.borrow().to_string(),
-            Self::Class(class) => class.to_string(),
+            Self::Class(class) => class.borrow().to_string(),
             Self::Instance(instance) => instance.borrow().to_string(),
+            Self::BoundMethod(method) => method.borrow().to_string(),
         };
         write!(f, "{string}")
     }
