@@ -11,6 +11,7 @@ use crate::scanner::{Scanner, Token, TokenType};
 use crate::value::{BoxedChunk, Function, Obj, ObjClosure, Value};
 
 type BoxedCompiler = Rc<RefCell<Compiler>>;
+type BoxedClassCompiler = Rc<RefCell<ClassCompiler>>;
 
 pub type Result<T> = std::result::Result<T, ParserError>;
 
@@ -111,6 +112,8 @@ impl Local {
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 enum FunctionType {
     Function,
+    Initializer,
+    Method,
     #[default]
     Script,
 }
@@ -132,7 +135,18 @@ impl Compiler {
         function_name: Option<Ustr>,
     ) -> Self {
         let mut locals = Vec::with_capacity(u8::MAX.into());
-        locals.push(Local::default());
+        let local = if function_type != FunctionType::Function {
+            let token = Token {
+                value: "this".into(),
+                ..Default::default()
+            };
+            let mut this_local = Local::new(token, 0);
+            this_local.initialized = true;
+            this_local
+        } else {
+            Local::default()
+        };
+        locals.push(local);
 
         Self {
             enclosing,
@@ -217,6 +231,17 @@ impl Default for Compiler {
 }
 
 #[derive(Debug, Clone)]
+struct ClassCompiler {
+    enclosing: Option<BoxedClassCompiler>,
+}
+
+impl ClassCompiler {
+    fn new(enclosing: Option<BoxedClassCompiler>) -> Self {
+        Self { enclosing }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct Parser {
     scanner: Scanner,
     previous: Option<Token>,
@@ -224,6 +249,7 @@ pub(crate) struct Parser {
     had_error: bool,
     panic_mode: bool,
     compiler: BoxedCompiler,
+    class: Option<BoxedClassCompiler>,
 }
 
 impl Parser {
@@ -236,6 +262,7 @@ impl Parser {
             had_error: false,
             panic_mode: false,
             compiler: Rc::new(RefCell::new(Compiler::default())),
+            class: None,
         }
     }
 
@@ -511,6 +538,15 @@ impl Parser {
         self.named_variable(self.previous.unwrap(), can_assign);
     }
 
+    fn this(&mut self, _can_assign: bool) {
+        if self.class.is_none() {
+            self.error_at_previous("Can't use 'this' outside of a class.");
+            return;
+        }
+
+        self.variable(false);
+    }
+
     fn unary(&mut self, _can_assign: bool) {
         let operator_type = self.previous.unwrap().token_type;
 
@@ -534,6 +570,7 @@ impl Parser {
             TokenType::Bang => Some(Self::unary),
             TokenType::String => Some(Self::string),
             TokenType::Identifier => Some(Self::variable),
+            TokenType::This => Some(Self::this),
             _ => None,
         }
     }
@@ -718,7 +755,12 @@ impl Parser {
         self.consume(TokenType::Identifier, "Expect method name.");
         let constant = self.identifier_constant(self.previous.unwrap());
 
-        let function_type = FunctionType::Function;
+        let function_type = if self.previous.unwrap().value == "init" {
+            FunctionType::Initializer
+        } else {
+            FunctionType::Method
+        };
+
         self.function(function_type);
 
         self.emit_code(OpCode::Method(constant));
@@ -733,6 +775,9 @@ impl Parser {
         self.emit_code(OpCode::Class(name_constant));
         self.define_variable(name_constant);
 
+        let class_compiler = ClassCompiler::new(self.class.as_ref().cloned());
+        self.class = Some(Rc::new(RefCell::new(class_compiler)));
+
         self.named_variable(class_name, false);
         self.consume(TokenType::LeftBrace, "Expect '{' before class body.");
         while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof) {
@@ -741,6 +786,16 @@ impl Parser {
 
         self.consume(TokenType::RightBrace, "Expect '}' after class body.");
         self.emit_code(OpCode::Pop);
+
+        let enclosing = self
+            .class
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .enclosing
+            .as_ref()
+            .cloned();
+        self.class = enclosing;
     }
 
     fn fun_declaration(&mut self) {
@@ -857,6 +912,10 @@ impl Parser {
         if self.match_token(TokenType::Semicolon) {
             self.emit_return();
         } else {
+            if self.compiler.borrow().function_type == FunctionType::Initializer {
+                self.error_at_previous("Can't return a value from an initializer.");
+            }
+
             self.expression();
             self.consume(TokenType::Semicolon, "Expect ';' after return value.");
             self.emit_code(OpCode::Return);
@@ -943,8 +1002,12 @@ impl Parser {
     }
 
     fn emit_return(&self) {
-        // Return nil if the function doesn't return anything.
-        self.emit_code(OpCode::Nil);
+        if self.compiler.borrow().function_type == FunctionType::Initializer {
+            self.emit_code(OpCode::GetLocal(0));
+        } else {
+            // Return nil if the function doesn't return anything.
+            self.emit_code(OpCode::Nil);
+        }
         self.emit_code(OpCode::Return);
     }
 

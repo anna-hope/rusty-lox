@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
+use std::convert::Into;
 use std::ops::{Div, Mul, Sub};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -18,6 +19,7 @@ use crate::value::{
 
 const FRAMES_MAX: usize = 64;
 const STACK_MAX: usize = FRAMES_MAX * 256;
+const INIT_STRING: &str = "init";
 
 pub type Result<T> = std::result::Result<T, InterpretError>;
 
@@ -88,7 +90,7 @@ impl Vm {
         self.stack
             .push(Rc::new(Value::Closure(Rc::clone(&closure))));
 
-        self.call(closure, 0).unwrap();
+        self.call(&closure, 0).unwrap();
         self.run()
     }
 
@@ -354,7 +356,7 @@ impl Vm {
         }
     }
 
-    fn call(&mut self, closure: BoxedObjClosure, arg_count: usize) -> Result<()> {
+    fn call(&mut self, closure: &BoxedObjClosure, arg_count: usize) -> Result<()> {
         let arity = closure.borrow().function.arity;
         if arg_count > arity {
             return Err(
@@ -367,22 +369,35 @@ impl Vm {
         }
 
         let stack_offset = self.stack.len() - arg_count - 1;
-        let frame = Rc::new(RefCell::new(CallFrame::new(closure, stack_offset)));
+        let frame = Rc::new(RefCell::new(CallFrame::new(
+            Rc::clone(&closure),
+            stack_offset,
+        )));
         self.frames.push(frame);
         Ok(())
     }
 
     fn call_value(&mut self, callee: &Rc<Value>, arg_count: usize) -> Result<()> {
         match callee.as_ref() {
-            Value::BoundMethod(bound) => self.call(Rc::clone(&bound.borrow().method), arg_count),
+            Value::BoundMethod(bound) => {
+                let stack_len = self.stack.len();
+                self.stack[stack_len - arg_count - 1] = Rc::clone(&bound.borrow().receiver);
+                self.call(&bound.borrow().method, arg_count)
+            }
             Value::Class(class) => {
                 let stack_len = self.stack.len();
                 self.stack[stack_len - arg_count - 1] = Rc::new(Value::Instance(Rc::new(
                     RefCell::new(ObjInstance::new(Rc::clone(class))),
                 )));
-                Ok(())
+                if let Some(initializer) = class.borrow().methods.get(&INIT_STRING.into()) {
+                    self.call(initializer, arg_count)
+                } else if arg_count != 0 {
+                    Err(self.runtime_error(format!("Expected 0 arguments but got {arg_count}")))
+                } else {
+                    Ok(())
+                }
             }
-            Value::Closure(closure) => self.call(Rc::clone(closure), arg_count),
+            Value::Closure(closure) => self.call(closure, arg_count),
             Value::ObjNative(native) => {
                 let stack_len = self.stack.len();
                 let args = &mut self.stack.as_mut_slice()[stack_len - arg_count..stack_len];
