@@ -41,6 +41,7 @@ pub(crate) enum OpCode {
     JumpIfFalse(JumpOffset),
     Loop(JumpOffset),
     Call(usize),
+    Invoke(usize, usize),
     Closure(usize, usize),
     Upvalue(Upvalue),
     CloseUpvalue,
@@ -122,7 +123,7 @@ impl Chunk {
         &self.constants[index]
     }
 
-    pub fn disassemble_instruction(&self, offset: usize) -> usize {
+    pub fn disassemble_instruction(&self, offset: usize) {
         print!("{:04} ", offset);
         if offset > 0 && self.lines[offset] == self.lines[offset - 1] {
             print!("   | ");
@@ -170,12 +171,14 @@ impl Chunk {
             OpCode::Call(arg_count) => {
                 println!("{instruction:-16} {arg_count:4}");
             }
+            OpCode::Invoke(constant_index, arg_count) => {
+                let constant = &self.constants[constant_index];
+                println!("{instruction:-16} ({arg_count} args) {constant_index:4} {constant}");
+            }
             _ => {
                 println!("{instruction}");
             }
         }
-
-        offset + 1
     }
 
     pub fn disassemble(&self, name: &str) {

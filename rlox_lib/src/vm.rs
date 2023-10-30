@@ -135,6 +135,12 @@ impl Vm {
                     frame = Rc::clone(self.frames.last().unwrap());
                     chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
                 }
+                OpCode::Invoke(index, arg_count) => {
+                    let method = get_name!(chunk, index);
+                    self.invoke(method, arg_count)?;
+                    frame = Rc::clone(self.frames.last().unwrap());
+                    chunk = Rc::clone(&frame.borrow().closure.borrow().function.chunk);
+                }
                 OpCode::Closure(index, upvalue_count) => {
                     let value = Rc::new(chunk.borrow().read_constant(index).clone());
                     self.stack.push(Rc::clone(&value));
@@ -370,7 +376,7 @@ impl Vm {
 
         let stack_offset = self.stack.len() - arg_count - 1;
         let frame = Rc::new(RefCell::new(CallFrame::new(
-            Rc::clone(&closure),
+            Rc::clone(closure),
             stack_offset,
         )));
         self.frames.push(frame);
@@ -415,6 +421,36 @@ impl Vm {
                 }
             }
             _ => Err(self.runtime_error("Can only call functions and classes.")),
+        }
+    }
+
+    fn invoke_from_class(
+        &mut self,
+        class: &BoxedObjClass,
+        name: Ustr,
+        arg_count: usize,
+    ) -> Result<()> {
+        if let Some(method) = class.borrow().methods.get(&name) {
+            self.call(method, arg_count)
+        } else {
+            Err(self.runtime_error(format!("Undefined property '{name}'")))
+        }
+    }
+
+    fn invoke(&mut self, name: Ustr, arg_count: usize) -> Result<()> {
+        let receiver = Rc::clone(self.stack.get(self.stack.len() - 1 - arg_count).unwrap());
+
+        match receiver.as_ref() {
+            Value::Instance(instance) => {
+                if let Some(value) = instance.borrow().fields.get(&name) {
+                    let stack_len = self.stack.len();
+                    self.stack[stack_len - arg_count - 1] = Rc::clone(value);
+                    self.call_value(value, arg_count)
+                } else {
+                    self.invoke_from_class(&instance.borrow().class, name, arg_count)
+                }
+            }
+            _ => Err(self.runtime_error("Only instances have methods.")),
         }
     }
 

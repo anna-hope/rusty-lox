@@ -454,6 +454,9 @@ impl Parser {
         if can_assign && self.match_token(TokenType::Equal) {
             self.expression();
             self.emit_code(OpCode::SetProperty(name));
+        } else if self.match_token(TokenType::LeftParen) {
+            let arg_count = self.argument_list();
+            self.emit_code(OpCode::Invoke(name, arg_count));
         } else {
             self.emit_code(OpCode::GetProperty(name));
         }
